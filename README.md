@@ -14,15 +14,20 @@ uvicorn app.main:app --reload
 
 Open `http://127.0.0.1:8000`.
 
-Gemini is optional for local testing. Set `GEMINI_API_KEY` or `GOOGLE_API_KEY` to enable Gemini report generation. Without it, the app generates a deterministic local report from the audit metrics.
+Gemini is optional for local testing. Set `GEMINI_API_KEY` or `GOOGLE_API_KEY` to enable Gemini report generation. Without it, the app shows an explicit Gemini configuration message.
 
 ## Main flow
 
 1. Upload a CSV or choose a demo dataset.
 2. Select protected attributes.
 3. Select the outcome column.
-4. Choose Logistic Regression or Decision Tree.
-5. Run the audit and export the report as PDF.
+4. Run the data-only pre-audit to inspect representation, validation, and proxy risks.
+5. Choose a post-audit model source:
+   - Train Logistic Regression or Decision Tree inside the auditor.
+   - Upload a trusted `.joblib`, `.pkl`, or `.pickle` sklearn-compatible model with `predict(...)`.
+6. Run the post-model audit and export the report as PDF.
+
+Uploaded model files are loaded in memory only and are not persisted. Pickle/joblib files can execute code when loaded, so only upload trusted artifacts.
 
 ## Cloud Run
 

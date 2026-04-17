@@ -21,6 +21,7 @@ Local Run
 6. python scripts/download_demos.py
 7. uvicorn app.main:app --reload
 8. Open http://127.0.0.1:8000
+9. For an external model audit, upload a trusted .joblib, .pkl, or .pickle file after selecting "Use uploaded model".
 
 Validation
 ----------
@@ -33,7 +34,7 @@ app/main.py
 FastAPI app entry point. Defines the landing page, health check, demo dataset API, CSV upload API, audit API, and PDF report download API.
 
 app/audit.py
-Core bias audit engine. Handles CSV cleaning, missing values, outcome normalization, representation balance, proxy detection, model training, Fairlearn metrics, feature importance, severity scoring, Gemini report generation, and local report fallback.
+Core bias audit engine. Handles CSV cleaning, missing values, outcome normalization, data-only pre-audit, representation balance, proxy detection, model training, uploaded-model prediction audits, Fairlearn metrics, feature importance, mitigation simulation, severity scoring, and Gemini report generation.
 
 app/demo_data.py
 Demo dataset registry and loader for COMPAS, UCI Adult, and German Credit. Falls back to synthetic demos if downloaded CSVs are missing.
@@ -45,13 +46,13 @@ app/templates/index.html
 Single-page HTML interface for upload, demo selection, column configuration, result sections, report text, and report download.
 
 app/static/app.js
-Frontend behavior for loading demos, uploading CSVs, selecting protected/outcome columns, running audits, and rendering results.
+Frontend behavior for loading demos, uploading CSVs, uploading model artifacts, selecting protected/outcome columns, running separate pre-audits and post-model audits, and rendering results.
 
 scripts/download_demos.py
 Downloads and preprocesses COMPAS, UCI Adult, and German Credit demo CSVs into data/demos.
 
 tests/test_audit.py
-Regression tests for outcome normalization, representation/proxy/bias detection, Decision Tree path, PDF generation, severity scoring, and upload/audit API flow.
+Regression tests for outcome normalization, representation/proxy/bias detection, Decision Tree path, PDF generation, severity scoring, pre-audit API flow, uploaded model API flow, prediction validation, and upload/audit API flow.
 
 requirements.txt
 Runtime and test dependencies.
@@ -88,5 +89,6 @@ German Credit: High severity, accuracy 0.71, max demographic parity difference 0
 
 Known Notes
 -----------
-Gemini is optional at runtime. If GEMINI_API_KEY is missing or Gemini fails, the app still produces a deterministic local report so demos and tests continue to work.
+Gemini is optional at runtime. If GEMINI_API_KEY is missing or Gemini fails, the app shows an explicit Gemini configuration/failure message instead of pretending an AI-written report was generated.
 The UI uses Tailwind CDN for MVP speed. For production hardening, replace it with a compiled Tailwind build.
+Uploaded pickle/joblib models can execute code when loaded. Only upload trusted local model artifacts.

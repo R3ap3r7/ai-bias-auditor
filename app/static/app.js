@@ -1,5 +1,6 @@
 const state = {
   sessionId: null,
+  modelId: null,
   columns: [],
   defaults: {},
   reportId: null,
@@ -17,17 +18,32 @@ const els = {
   columnRows: document.getElementById("columnRows"),
   outcomeSelect: document.getElementById("outcomeSelect"),
   modelSelect: document.getElementById("modelSelect"),
+  auditModeSelect: document.getElementById("auditModeSelect"),
+  modelUploadForm: document.getElementById("modelUploadForm"),
+  modelFile: document.getElementById("modelFile"),
+  modelStatus: document.getElementById("modelStatus"),
+  runPreAuditButton: document.getElementById("runPreAuditButton"),
   runAuditButton: document.getElementById("runAuditButton"),
   resetButton: document.getElementById("resetButton"),
   severityBadge: document.getElementById("severityBadge"),
+  preAuditBadge: document.getElementById("preAuditBadge"),
   dataOverview: document.getElementById("dataOverview"),
   cleaningLog: document.getElementById("cleaningLog"),
+  validationTable: document.getElementById("validationTable"),
   representationTables: document.getElementById("representationTables"),
   proxyTable: document.getElementById("proxyTable"),
+  postAuditSection: document.getElementById("postAuditSection"),
+  performanceSection: document.getElementById("performanceSection"),
+  biasSection: document.getElementById("biasSection"),
+  featureSection: document.getElementById("featureSection"),
+  reportSection: document.getElementById("reportSection"),
+  modelAuditSummary: document.getElementById("modelAuditSummary"),
+  predictionValidationTable: document.getElementById("predictionValidationTable"),
   modelPerformance: document.getElementById("modelPerformance"),
   biasScorecard: document.getElementById("biasScorecard"),
   featureImportance: document.getElementById("featureImportance"),
   biasSources: document.getElementById("biasSources"),
+  simulationSummary: document.getElementById("simulationSummary"),
   reportSource: document.getElementById("reportSource"),
   reportText: document.getElementById("reportText"),
   downloadPdf: document.getElementById("downloadPdf"),
@@ -36,6 +52,9 @@ const els = {
 document.addEventListener("DOMContentLoaded", () => {
   loadDemos();
   els.uploadForm.addEventListener("submit", uploadDataset);
+  els.modelUploadForm.addEventListener("submit", uploadModel);
+  els.auditModeSelect.addEventListener("change", toggleModelUpload);
+  els.runPreAuditButton.addEventListener("click", runPreAudit);
   els.runAuditButton.addEventListener("click", runAudit);
   els.resetButton.addEventListener("click", resetApp);
 });
@@ -89,8 +108,39 @@ async function loadDemo(demoId) {
   }
 }
 
+async function uploadModel(event) {
+  event.preventDefault();
+  clearMessage();
+  if (!state.sessionId) {
+    showMessage("Upload a dataset before uploading a model.", "error");
+    return;
+  }
+  const file = els.modelFile.files[0];
+  if (!file) {
+    showMessage("Choose a .joblib, .pkl, or .pickle model file.", "error");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("session_id", state.sessionId);
+  formData.append("file", file);
+  setBusy("Uploading model...");
+  try {
+    const data = await requestJson("/api/model", { method: "POST", body: formData });
+    state.modelId = data.model_id;
+    els.modelStatus.textContent = `${data.filename} loaded as ${data.class_name}. ${data.warning}`;
+  } catch (error) {
+    state.modelId = null;
+    els.modelStatus.textContent = "";
+    showMessage(error.message, "error");
+  } finally {
+    clearBusy();
+  }
+}
+
 function configureDataset(data) {
   state.sessionId = data.session_id;
+  state.modelId = null;
   state.columns = data.profile.column_names;
   state.defaults = data.defaults || {};
   state.reportId = null;
@@ -98,7 +148,13 @@ function configureDataset(data) {
   els.landing.classList.add("hidden");
   els.config.classList.remove("hidden");
   els.results.classList.add("hidden");
+  hidePostAuditSections();
   els.severityBadge.classList.add("hidden");
+  els.preAuditBadge.classList.add("hidden");
+  els.modelStatus.textContent = "";
+  els.modelFile.value = "";
+  els.auditModeSelect.value = "train";
+  toggleModelUpload();
 
   els.datasetSummary.textContent = `${data.profile.rows} rows, ${data.profile.columns} columns loaded from ${data.name || data.source}.`;
 
@@ -130,27 +186,39 @@ function configureDataset(data) {
   }
 }
 
-async function runAudit() {
-  clearMessage();
+function selectedAuditPayload() {
   const protectedAttributes = Array.from(document.querySelectorAll(".protected-checkbox:checked")).map((input) => input.value);
   if (!protectedAttributes.length) {
-    showMessage("Select at least one protected attribute.", "error");
+    throw new Error("Select at least one protected attribute.");
+  }
+  return {
+    session_id: state.sessionId,
+    protected_attributes: protectedAttributes,
+    outcome_column: els.outcomeSelect.value,
+    model_type: els.modelSelect.value,
+    audit_mode: els.auditModeSelect.value,
+    model_id: state.modelId,
+  };
+}
+
+async function runPreAudit() {
+  clearMessage();
+  let payload;
+  try {
+    payload = selectedAuditPayload();
+  } catch (error) {
+    showMessage(error.message, "error");
     return;
   }
 
-  setBusy("Running audit...");
+  setBusy("Running pre-audit...");
   try {
-    const result = await requestJson("/api/audit", {
+    const result = await requestJson("/api/pre-audit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        session_id: state.sessionId,
-        protected_attributes: protectedAttributes,
-        outcome_column: els.outcomeSelect.value,
-        model_type: els.modelSelect.value,
-      }),
+      body: JSON.stringify(payload),
     });
-    renderResults(result);
+    renderPreAuditResult(result);
   } catch (error) {
     showMessage(error.message, "error");
   } finally {
@@ -158,29 +226,65 @@ async function runAudit() {
   }
 }
 
-function renderResults(result) {
-  state.reportId = result.report_id;
-  els.results.classList.remove("hidden");
-  els.config.scrollIntoView({ behavior: "smooth", block: "start" });
+async function runAudit() {
+  clearMessage();
+  let payload;
+  try {
+    payload = selectedAuditPayload();
+  } catch (error) {
+    showMessage(error.message, "error");
+    return;
+  }
+  if (payload.audit_mode === "uploaded_model" && !state.modelId) {
+    showMessage("Upload a model before running uploaded-model audit.", "error");
+    return;
+  }
 
-  renderSeverity(result.severity);
+  setBusy("Running post-model audit...");
+  try {
+    const result = await requestJson("/api/audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    renderFullAuditResult(result);
+  } catch (error) {
+    showMessage(error.message, "error");
+  } finally {
+    clearBusy();
+  }
+}
+
+function renderPreAuditResult(result) {
+  els.results.classList.remove("hidden");
+  hidePostAuditSections();
+  els.severityBadge.classList.add("hidden");
+  renderPreAuditBadge(result.pre_audit_severity);
   renderDataOverview(result);
   renderPreAudit(result.pre_audit);
-  renderPerformance(result.model.performance);
-  renderBiasScorecard(result.model.bias_metrics);
-  renderFeatureImportance(result.model.feature_importance, result.model.bias_sources);
+  els.config.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderFullAuditResult(result) {
+  state.reportId = result.report_id;
+  els.results.classList.remove("hidden");
+  renderSeverity(result.severity);
+  renderPreAuditBadge(result.pre_audit_severity || "Low");
+  renderDataOverview(result);
+  renderPreAudit(result.pre_audit);
+  renderPostAudit(result.post_audit || result.model);
   renderReport(result);
+  els.config.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function renderSeverity(severity) {
-  const colors = {
-    Low: "border-emerald-300 bg-emerald-50 text-emerald-800",
-    Medium: "border-amber-300 bg-amber-50 text-amber-800",
-    High: "border-red-300 bg-red-50 text-red-800",
-    Critical: "border-red-500 bg-red-100 text-red-900",
-  };
-  els.severityBadge.className = `rounded-md border px-4 py-2 text-sm font-semibold ${colors[severity] || colors.Medium}`;
-  els.severityBadge.textContent = `Severity: ${severity}`;
+  els.severityBadge.className = `rounded-md border px-4 py-2 text-sm font-semibold ${severityClass(severity)}`;
+  els.severityBadge.textContent = `Post-Audit Severity: ${severity}`;
+}
+
+function renderPreAuditBadge(severity) {
+  els.preAuditBadge.className = `rounded-md border px-3 py-2 text-sm font-semibold ${severityClass(severity)}`;
+  els.preAuditBadge.textContent = `Pre-Audit Severity: ${severity}`;
 }
 
 function renderDataOverview(result) {
@@ -205,6 +309,16 @@ function renderDataOverview(result) {
 }
 
 function renderPreAudit(preAudit) {
+  const validationRows = [["Check", "Status", "Details"]];
+  for (const item of preAudit.validation?.checks || []) {
+    validationRows.push([item.name, raw(badge(item.status)), item.details]);
+  }
+  for (const warning of preAudit.validation?.warnings || []) {
+    validationRows.push(["Warning", raw(badge("Warn")), warning]);
+  }
+  if (validationRows.length === 1) validationRows.push(["No validation issues", raw(badge("Pass")), ""]);
+  els.validationTable.innerHTML = table(validationRows);
+
   els.representationTables.innerHTML = preAudit.representation
     .map((item) => {
       const rows = [["Group", "Count", "Positive rate", "Ratio", "Status"]];
@@ -223,13 +337,45 @@ function renderPreAudit(preAudit) {
   els.proxyTable.innerHTML = table(proxyRows);
 }
 
+function renderPostAudit(postAudit) {
+  els.postAuditSection.classList.remove("hidden");
+  els.performanceSection.classList.remove("hidden");
+  els.biasSection.classList.remove("hidden");
+  els.featureSection.classList.remove("hidden");
+  els.reportSection.classList.remove("hidden");
+
+  els.modelAuditSummary.textContent = `${postAudit.model_type} using ${postAudit.model_input?.strategy || "unknown input strategy"}.`;
+
+  const predictionRows = [["Check", "Status", "Details"]];
+  predictionRows.push([
+    "Binary predictions",
+    raw(badge(postAudit.prediction_validation?.status || "Pass")),
+    `Unique values: ${(postAudit.prediction_validation?.unique_values || []).join(", ") || "none"}`,
+  ]);
+  if (postAudit.prediction_validation?.mapping) {
+    predictionRows.push(["Prediction mapping", raw(badge("Info")), JSON.stringify(postAudit.prediction_validation.mapping)]);
+  }
+  for (const warning of postAudit.prediction_validation?.warnings || []) {
+    predictionRows.push(["Warning", raw(badge("Warn")), warning]);
+  }
+  for (const warning of postAudit.model_input?.warnings || []) {
+    predictionRows.push(["Model input warning", raw(badge("Warn")), warning]);
+  }
+  els.predictionValidationTable.innerHTML = table(predictionRows);
+
+  renderPerformance(postAudit.performance);
+  renderBiasScorecard(postAudit.bias_metrics);
+  renderFeatureImportance(postAudit.feature_importance || [], postAudit.bias_sources || []);
+  renderSimulation(postAudit.improvement_simulation);
+}
+
 function renderPerformance(performance) {
   els.modelPerformance.innerHTML = [
     statCard("Accuracy", performance.accuracy),
     statCard("Precision", performance.precision),
     statCard("Recall", performance.recall),
-    statCard("Train", performance.training_samples),
-    statCard("Test", performance.test_samples),
+    statCard("Train", performance.training_samples ?? "External"),
+    statCard("Eval", performance.test_samples),
   ].join("");
 }
 
@@ -264,23 +410,27 @@ function renderBiasScorecard(metrics) {
 }
 
 function renderFeatureImportance(importances, sources) {
-  const max = Math.max(...importances.map((item) => item.normalized_importance), 0.01);
-  els.featureImportance.innerHTML = importances
-    .map((item) => {
-      const width = Math.max((item.normalized_importance / max) * 100, 2);
-      return `
-        <div>
-          <div class="mb-1 flex justify-between text-sm">
-            <span>${item.rank}. ${escapeHtml(item.feature)}</span>
-            <span>${item.importance}</span>
+  if (!importances.length) {
+    els.featureImportance.innerHTML = `<p class="text-sm text-zinc-600">Feature importance is not available for this model artifact.</p>`;
+  } else {
+    const max = Math.max(...importances.map((item) => item.normalized_importance), 0.01);
+    els.featureImportance.innerHTML = importances
+      .map((item) => {
+        const width = Math.max((item.normalized_importance / max) * 100, 2);
+        return `
+          <div>
+            <div class="mb-1 flex justify-between text-sm">
+              <span>${item.rank}. ${escapeHtml(item.feature)}</span>
+              <span>${item.importance}</span>
+            </div>
+            <div class="h-3 rounded-md bg-zinc-100">
+              <div class="h-3 rounded-md bg-zinc-900" style="width:${width}%"></div>
+            </div>
           </div>
-          <div class="h-3 rounded-md bg-zinc-100">
-            <div class="h-3 rounded-md bg-zinc-900" style="width:${width}%"></div>
-          </div>
-        </div>
-      `;
-    })
-    .join("");
+        `;
+      })
+      .join("");
+  }
 
   const rows = [["Feature", "Importance rank", "Proxy link"]];
   for (const source of sources) {
@@ -289,6 +439,23 @@ function renderFeatureImportance(importances, sources) {
   }
   if (rows.length === 1) rows.push(["None in top 10", "", ""]);
   els.biasSources.innerHTML = table(rows);
+}
+
+function renderSimulation(simulation) {
+  if (!simulation) {
+    els.simulationSummary.textContent = "No simulation data available.";
+    return;
+  }
+  if (!simulation.available) {
+    els.simulationSummary.textContent = simulation.reason || simulation.recommended_next_step || "Simulation is unavailable.";
+    return;
+  }
+  els.simulationSummary.innerHTML = `
+    <p>${escapeHtml(simulation.strategy)}</p>
+    <p class="mt-2">Dropped features: ${escapeHtml((simulation.dropped_features || []).join(", "))}</p>
+    <p class="mt-2">Simulated accuracy ${simulation.accuracy}, max DP ${simulation.max_demographic_parity_difference}, max EO ${simulation.max_equalized_odds_difference}.</p>
+    <p class="mt-2 text-xs text-zinc-500">${escapeHtml(simulation.note || "")}</p>
+  `;
 }
 
 function renderReport(result) {
@@ -300,15 +467,46 @@ function renderReport(result) {
 
 function resetApp() {
   state.sessionId = null;
+  state.modelId = null;
   state.columns = [];
   state.defaults = {};
   state.reportId = null;
   els.landing.classList.remove("hidden");
   els.config.classList.add("hidden");
   els.results.classList.add("hidden");
+  hidePostAuditSections();
   els.severityBadge.classList.add("hidden");
+  els.preAuditBadge.classList.add("hidden");
   els.csvFile.value = "";
+  els.modelFile.value = "";
+  els.modelStatus.textContent = "";
   clearMessage();
+}
+
+function hidePostAuditSections() {
+  els.postAuditSection.classList.add("hidden");
+  els.performanceSection.classList.add("hidden");
+  els.biasSection.classList.add("hidden");
+  els.featureSection.classList.add("hidden");
+  els.reportSection.classList.add("hidden");
+}
+
+function toggleModelUpload() {
+  const useUpload = els.auditModeSelect.value === "uploaded_model";
+  els.modelUploadForm.classList.toggle("hidden", !useUpload);
+  els.modelSelect.disabled = useUpload;
+}
+
+function setBusy(text) {
+  els.runAuditButton.disabled = true;
+  els.runPreAuditButton.disabled = true;
+  els.runAuditButton.textContent = text;
+}
+
+function clearBusy() {
+  els.runAuditButton.disabled = false;
+  els.runPreAuditButton.disabled = false;
+  els.runAuditButton.textContent = "Run Post-Model Audit";
 }
 
 function statCard(label, value) {
@@ -343,7 +541,10 @@ function table(rows) {
 function badge(value) {
   const colors = {
     Green: "bg-emerald-50 text-emerald-800 border-emerald-200",
+    Pass: "bg-emerald-50 text-emerald-800 border-emerald-200",
     Yellow: "bg-amber-50 text-amber-800 border-amber-200",
+    Warn: "bg-amber-50 text-amber-800 border-amber-200",
+    Info: "bg-zinc-50 text-zinc-800 border-zinc-200",
     Red: "bg-red-50 text-red-800 border-red-200",
     Low: "bg-emerald-50 text-emerald-800 border-emerald-200",
     Medium: "bg-amber-50 text-amber-800 border-amber-200",
@@ -351,6 +552,16 @@ function badge(value) {
     Critical: "bg-red-100 text-red-900 border-red-300",
   };
   return `<span class="inline-block rounded-md border px-2 py-1 text-xs font-semibold ${colors[value] || "border-zinc-200"}">${escapeHtml(value)}</span>`;
+}
+
+function severityClass(severity) {
+  const colors = {
+    Low: "border-emerald-300 bg-emerald-50 text-emerald-800",
+    Medium: "border-amber-300 bg-amber-50 text-amber-800",
+    High: "border-red-300 bg-red-50 text-red-800",
+    Critical: "border-red-500 bg-red-100 text-red-900",
+  };
+  return colors[severity] || colors.Medium;
 }
 
 function raw(value) {
@@ -383,16 +594,6 @@ function showMessage(text, type = "info") {
 function clearMessage() {
   els.message.className = "mb-6 hidden rounded-md border px-4 py-3 text-sm";
   els.message.textContent = "";
-}
-
-function setBusy(text) {
-  els.runAuditButton.disabled = true;
-  els.runAuditButton.textContent = text;
-}
-
-function clearBusy() {
-  els.runAuditButton.disabled = false;
-  els.runAuditButton.textContent = "Run Audit";
 }
 
 function escapeHtml(value) {

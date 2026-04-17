@@ -84,9 +84,40 @@
             </label>
           </div>
 
-          <button id="runAuditButton" class="mt-5 rounded-md bg-zinc-950 px-5 py-3 text-sm font-semibold text-white">
-            Run Audit
-          </button>
+          <div class="mt-5 grid gap-4 md:grid-cols-2">
+            <label class="text-sm font-medium">
+              Post-Audit Model Source
+              <select id="auditModeSelect" class="mt-2 block w-full rounded-md border border-zinc-300 bg-white px-3 py-2">
+                <option value="train">Train a model in the auditor</option>
+                <option value="uploaded_model">Use uploaded model</option>
+              </select>
+            </label>
+            <form id="modelUploadForm" class="hidden rounded-md border border-zinc-200 bg-zinc-50 p-3">
+              <label class="text-sm font-medium">
+                Upload Model File
+                <input
+                  id="modelFile"
+                  name="file"
+                  type="file"
+                  accept=".joblib,.pkl,.pickle"
+                  class="mt-2 block w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <button class="mt-3 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold" type="submit">
+                Upload Model
+              </button>
+              <p id="modelStatus" class="mt-2 text-xs text-zinc-600"></p>
+            </form>
+          </div>
+
+          <div class="mt-5 flex flex-col gap-3 md:flex-row">
+            <button id="runPreAuditButton" class="rounded-md border border-zinc-300 bg-white px-5 py-3 text-sm font-semibold" type="button">
+              Run Data Pre-Audit
+            </button>
+            <button id="runAuditButton" class="rounded-md bg-zinc-950 px-5 py-3 text-sm font-semibold text-white" type="button">
+              Run Post-Model Audit
+            </button>
+          </div>
         </div>
       </section>
 
@@ -98,31 +129,45 @@
           <div id="cleaningLog" class="mt-3 overflow-x-auto"></div>
         </div>
 
-        <div class="rounded-md border border-zinc-200 bg-white p-5">
-          <h2 class="text-xl font-semibold">Pre-Audit Warnings</h2>
+        <div id="preAuditSection" class="rounded-md border border-zinc-200 bg-white p-5">
+          <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <h2 class="text-xl font-semibold">Data-Only Pre-Audit</h2>
+            <div id="preAuditBadge" class="hidden rounded-md border px-3 py-2 text-sm font-semibold"></div>
+          </div>
+          <h3 class="mt-5 text-sm font-semibold uppercase text-zinc-600">Validation</h3>
+          <div id="validationTable" class="mt-3 overflow-x-auto"></div>
           <div id="representationTables" class="mt-4 space-y-5"></div>
           <h3 class="mt-6 text-sm font-semibold uppercase text-zinc-600">Proxy Variables</h3>
           <div id="proxyTable" class="mt-3 overflow-x-auto"></div>
         </div>
 
-        <div class="rounded-md border border-zinc-200 bg-white p-5">
+        <div id="postAuditSection" class="hidden rounded-md border border-zinc-200 bg-white p-5">
+          <h2 class="text-xl font-semibold">Post-Model Audit</h2>
+          <p id="modelAuditSummary" class="mt-2 text-sm text-zinc-600"></p>
+          <h3 class="mt-5 text-sm font-semibold uppercase text-zinc-600">Prediction Validation</h3>
+          <div id="predictionValidationTable" class="mt-3 overflow-x-auto"></div>
+        </div>
+
+        <div id="performanceSection" class="hidden rounded-md border border-zinc-200 bg-white p-5">
           <h2 class="text-xl font-semibold">Model Performance</h2>
           <div id="modelPerformance" class="mt-4 grid gap-4 md:grid-cols-5"></div>
         </div>
 
-        <div class="rounded-md border border-zinc-200 bg-white p-5">
+        <div id="biasSection" class="hidden rounded-md border border-zinc-200 bg-white p-5">
           <h2 class="text-xl font-semibold">Bias Scorecard</h2>
           <div id="biasScorecard" class="mt-4 space-y-5"></div>
         </div>
 
-        <div class="rounded-md border border-zinc-200 bg-white p-5">
+        <div id="featureSection" class="hidden rounded-md border border-zinc-200 bg-white p-5">
           <h2 class="text-xl font-semibold">Feature Importance</h2>
           <div id="featureImportance" class="mt-4 space-y-3"></div>
           <h3 class="mt-6 text-sm font-semibold uppercase text-zinc-600">Bias Sources</h3>
           <div id="biasSources" class="mt-3 overflow-x-auto"></div>
+          <h3 class="mt-6 text-sm font-semibold uppercase text-zinc-600">Mitigation Simulation</h3>
+          <div id="simulationSummary" class="mt-3 text-sm text-zinc-700"></div>
         </div>
 
-        <div class="rounded-md border border-zinc-200 bg-white p-5">
+        <div id="reportSection" class="hidden rounded-md border border-zinc-200 bg-white p-5">
           <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <h2 class="text-xl font-semibold">Gemini Report</h2>
             <a id="downloadPdf" class="hidden rounded-md bg-zinc-950 px-4 py-2 text-sm font-semibold text-white" href="#">

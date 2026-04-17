@@ -94,6 +94,11 @@ MODEL_LABELS = {
     "decision_tree": "Decision Tree",
 }
 
+AUDIT_MODE_LABELS = {
+    "train": "Train a model in the auditor",
+    "uploaded_model": "Audit an uploaded model",
+}
+
 
 @dataclass
 class CleanedData:
@@ -127,19 +132,31 @@ def run_audit(
     protected_attributes: list[str],
     outcome_column: str,
     model_type: str = "logistic_regression",
+    audit_mode: str = "train",
+    uploaded_model: Any | None = None,
+    uploaded_model_name: str | None = None,
 ) -> dict[str, Any]:
-    if not protected_attributes:
-        raise AuditError("Select at least one protected attribute.")
-    if outcome_column in protected_attributes:
-        raise AuditError("The outcome column cannot also be marked as protected.")
-    if model_type not in MODEL_LABELS:
-        raise AuditError("Unsupported model type.")
+    pre_result = run_pre_audit_only(df, protected_attributes, outcome_column)
+    clean_df = pre_result["_clean_dataframe"]
+    pre_audit = pre_result["pre_audit"]
 
-    cleaned = clean_dataframe(df, outcome_column, protected_attributes)
-    clean_df = cleaned.dataframe
-
-    pre_audit = run_pre_model_audit(clean_df, protected_attributes, outcome_column)
-    model_results = train_and_audit_model(clean_df, protected_attributes, outcome_column, model_type, pre_audit["proxy_flags"])
+    if audit_mode not in AUDIT_MODE_LABELS:
+        raise AuditError("Unsupported audit mode.")
+    if audit_mode == "uploaded_model":
+        if uploaded_model is None:
+            raise AuditError("Upload a model before running an uploaded-model audit.")
+        model_results = audit_uploaded_model(
+            clean_df,
+            protected_attributes,
+            outcome_column,
+            uploaded_model,
+            uploaded_model_name or "Uploaded model",
+            pre_audit["proxy_flags"],
+        )
+    else:
+        if model_type not in MODEL_LABELS:
+            raise AuditError("Unsupported model type.")
+        model_results = train_and_audit_model(clean_df, protected_attributes, outcome_column, model_type, pre_audit["proxy_flags"])
 
     max_dp = max((item["demographic_parity_difference"] for item in model_results["bias_metrics"]), default=0.0)
     max_eo = max((item["equalized_odds_difference"] for item in model_results["bias_metrics"]), default=0.0)
@@ -150,21 +167,56 @@ def run_audit(
     severity = calculate_severity(max_dp, max_eo, len(pre_audit["proxy_flags"]), min_representation_ratio)
 
     summary = {
+        "dataset": pre_result["dataset"],
+        "cleaning": pre_result["cleaning"],
+        "pre_audit": pre_audit,
+        "pre_audit_severity": pre_result["pre_audit_severity"],
+        "post_audit": model_results,
+        "model": model_results,
+        "severity": severity,
+        "report": {},
+    }
+    summary["dataset"]["audit_mode"] = AUDIT_MODE_LABELS[audit_mode]
+    summary["dataset"]["model_type"] = model_results["model_type"]
+    summary["report"] = generate_explanation_report(summary)
+    return json_safe(summary)
+
+
+def run_pre_audit_only(
+    df: pd.DataFrame,
+    protected_attributes: list[str],
+    outcome_column: str,
+) -> dict[str, Any]:
+    validate_audit_selections(df, protected_attributes, outcome_column)
+    cleaned = clean_dataframe(df, outcome_column, protected_attributes)
+    clean_df = cleaned.dataframe
+    pre_audit = run_pre_model_audit(clean_df, protected_attributes, outcome_column)
+    min_representation_ratio = min(
+        (item["minimum_representation_ratio"] for item in pre_audit["representation"]),
+        default=1.0,
+    )
+    result = {
         "dataset": {
             "rows": int(len(clean_df)),
             "columns": int(len(clean_df.columns)),
             "outcome_column": outcome_column,
             "protected_attributes": protected_attributes,
-            "model_type": MODEL_LABELS[model_type],
         },
         "cleaning": cleaned.cleaning_log,
         "pre_audit": pre_audit,
-        "model": model_results,
-        "severity": severity,
-        "report": {},
+        "pre_audit_severity": calculate_pre_audit_severity(len(pre_audit["proxy_flags"]), min_representation_ratio),
     }
-    summary["report"] = generate_explanation_report(summary)
-    return json_safe(summary)
+    return json_safe(result) | {"_clean_dataframe": clean_df}
+
+
+def validate_audit_selections(df: pd.DataFrame, protected_attributes: list[str], outcome_column: str) -> None:
+    if not protected_attributes:
+        raise AuditError("Select at least one protected attribute.")
+    if outcome_column in protected_attributes:
+        raise AuditError("The outcome column cannot also be marked as protected.")
+    missing_columns = [column for column in [outcome_column, *protected_attributes] if column not in df.columns]
+    if missing_columns:
+        raise AuditError(f"Missing selected column(s): {', '.join(missing_columns)}")
 
 
 def clean_dataframe(df: pd.DataFrame, outcome_column: str, protected_attributes: list[str]) -> CleanedData:
@@ -303,6 +355,7 @@ def run_pre_model_audit(
     protected_attributes: list[str],
     outcome_column: str,
 ) -> dict[str, Any]:
+    validation = validate_pre_audit_data(df, protected_attributes, outcome_column)
     representation = []
     for protected in protected_attributes:
         grouped = grouped_sensitive_feature(df[protected], protected)
@@ -334,7 +387,52 @@ def run_pre_model_audit(
         )
 
     proxy_flags = detect_proxy_variables(df, protected_attributes, outcome_column)
-    return {"representation": representation, "proxy_flags": proxy_flags}
+    return {"validation": validation, "representation": representation, "proxy_flags": proxy_flags}
+
+
+def validate_pre_audit_data(
+    df: pd.DataFrame,
+    protected_attributes: list[str],
+    outcome_column: str,
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    checks: list[dict[str, Any]] = []
+
+    outcome_values = sorted(df[outcome_column].dropna().unique().tolist())
+    if outcome_values != [0, 1]:
+        raise AuditError("The normalized outcome field must be binary 0/1.")
+
+    positive_rate = float(df[outcome_column].mean()) if len(df) else 0.0
+    if positive_rate < 0.05 or positive_rate > 0.95:
+        warnings.append("The outcome is extremely imbalanced, so model metrics may be unstable.")
+    checks.append(
+        {
+            "name": "Outcome is binary",
+            "status": "Pass",
+            "details": f"Outcome `{outcome_column}` normalized to 0/1 with positive rate {round(positive_rate, 4)}.",
+        }
+    )
+
+    for protected in protected_attributes:
+        grouped = grouped_sensitive_feature(df[protected], protected)
+        counts = grouped.value_counts(dropna=False)
+        if len(counts) < 2:
+            warnings.append(f"Protected attribute `{protected}` has fewer than two groups after cleaning.")
+            status = "Warn"
+        elif int(counts.min()) < 10:
+            warnings.append(f"Protected attribute `{protected}` has at least one group with fewer than 10 rows.")
+            status = "Warn"
+        else:
+            status = "Pass"
+        checks.append(
+            {
+                "name": f"Protected groups for {protected}",
+                "status": status,
+                "details": ", ".join(f"{group}: {count}" for group, count in counts.items()),
+            }
+        )
+
+    return {"checks": checks, "warnings": warnings}
 
 
 def detect_proxy_variables(df: pd.DataFrame, protected_attributes: list[str], outcome_column: str) -> list[dict[str, Any]]:
@@ -386,29 +484,107 @@ def train_and_audit_model(
 
     pipeline = build_model_pipeline(X, model_type)
     pipeline.fit(X_train, y_train)
-    y_pred = pipeline.predict(X_test)
+    y_pred, prediction_validation = normalize_prediction_output(pipeline.predict(X_test))
+    feature_importance = model_feature_importance(pipeline, X)
+    result = build_post_audit_result(
+        X_test,
+        y_test,
+        y_pred,
+        protected_attributes,
+        proxy_flags,
+        feature_importance,
+        model_type=MODEL_LABELS[model_type],
+        mode="train",
+        training_samples=int(len(X_train)),
+        prediction_validation=prediction_validation,
+        model_input={"strategy": "auditor_pipeline", "details": "The auditor trained a preprocessing + model pipeline."},
+    )
+    result["improvement_simulation"] = simulate_feature_drop(df, protected_attributes, outcome_column, model_type, proxy_flags)
+    return result
 
+
+def audit_uploaded_model(
+    df: pd.DataFrame,
+    protected_attributes: list[str],
+    outcome_column: str,
+    model: Any,
+    model_name: str,
+    proxy_flags: list[dict[str, Any]],
+) -> dict[str, Any]:
+    X = df.drop(columns=[outcome_column])
+    y = df[outcome_column].astype(int)
+    if X.empty:
+        raise AuditError("At least one feature column is required in addition to the outcome column.")
+    if not hasattr(model, "predict"):
+        raise AuditError("Uploaded model must expose a predict(...) method.")
+
+    raw_predictions, input_frame, model_input = predict_with_uploaded_model(model, X)
+    y_pred, prediction_validation = normalize_prediction_output(raw_predictions)
+    if len(y_pred) != len(y):
+        raise AuditError("Uploaded model returned a different number of predictions than dataset rows.")
+
+    if len(set(y_pred.tolist())) < 2:
+        prediction_validation["warnings"].append(
+            "The uploaded model predicted only one class for this dataset. Bias metrics may look artificially low."
+        )
+
+    feature_importance = generic_model_feature_importance(model, input_frame)
+    result = build_post_audit_result(
+        X,
+        y,
+        y_pred,
+        protected_attributes,
+        proxy_flags,
+        feature_importance,
+        model_type=f"Uploaded model ({model_name})",
+        mode="uploaded_model",
+        training_samples=None,
+        prediction_validation=prediction_validation,
+        model_input=model_input,
+    )
+    result["improvement_simulation"] = {
+        "available": False,
+        "reason": "The uploaded model was evaluated as-is. The auditor cannot safely retrain or modify an external model artifact.",
+        "recommended_next_step": "Retrain the source model without direct protected attributes and high-risk proxy variables, then upload the new artifact for comparison.",
+    }
+    return result
+
+
+def build_post_audit_result(
+    X_eval: pd.DataFrame,
+    y_true: pd.Series,
+    y_pred: pd.Series,
+    protected_attributes: list[str],
+    proxy_flags: list[dict[str, Any]],
+    feature_importance: list[dict[str, Any]],
+    *,
+    model_type: str,
+    mode: str,
+    training_samples: int | None,
+    prediction_validation: dict[str, Any],
+    model_input: dict[str, Any],
+) -> dict[str, Any]:
     performance = {
-        "training_samples": int(len(X_train)),
-        "test_samples": int(len(X_test)),
-        "accuracy": round(float(accuracy_score(y_test, y_pred)), 4),
-        "precision": round(float(precision_score(y_test, y_pred, zero_division=0)), 4),
-        "recall": round(float(recall_score(y_test, y_pred, zero_division=0)), 4),
+        "training_samples": training_samples,
+        "test_samples": int(len(X_eval)),
+        "accuracy": round(float(accuracy_score(y_true, y_pred)), 4),
+        "precision": round(float(precision_score(y_true, y_pred, zero_division=0)), 4),
+        "recall": round(float(recall_score(y_true, y_pred, zero_division=0)), 4),
     }
 
     bias_metrics = []
     for protected in protected_attributes:
-        sensitive = grouped_sensitive_feature(X_test[protected], protected)
+        sensitive = grouped_sensitive_feature(X_eval[protected], protected)
         dp = safe_metric(
-            lambda: demographic_parity_difference(y_test, y_pred, sensitive_features=sensitive),
+            lambda: demographic_parity_difference(y_true, y_pred, sensitive_features=sensitive),
             default=0.0,
         )
         eo = safe_metric(
-            lambda: equalized_odds_difference(y_test, y_pred, sensitive_features=sensitive),
+            lambda: equalized_odds_difference(y_true, y_pred, sensitive_features=sensitive),
             default=0.0,
         )
 
-        group_table = group_prediction_table(y_test, y_pred, sensitive)
+        group_table = group_prediction_table(y_true, y_pred, sensitive)
         bias_metrics.append(
             {
                 "protected_attribute": protected,
@@ -426,7 +602,19 @@ def train_and_audit_model(
             }
         )
 
-    feature_importance = model_feature_importance(pipeline, X)
+    return {
+        "mode": mode,
+        "model_type": model_type,
+        "model_input": model_input,
+        "prediction_validation": prediction_validation,
+        "performance": performance,
+        "bias_metrics": bias_metrics,
+        "feature_importance": feature_importance[:10],
+        "bias_sources": build_bias_sources(feature_importance, proxy_flags),
+    }
+
+
+def build_bias_sources(feature_importance: list[dict[str, Any]], proxy_flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
     proxy_lookup = {(item["feature"], item["protected_attribute"]): item for item in proxy_flags}
     flagged_features = {item["feature"] for item in proxy_flags}
     bias_sources = []
@@ -441,13 +629,264 @@ def train_and_audit_model(
                     "proxy_links": related,
                 }
             )
+    return bias_sources
 
-    return {
-        "performance": performance,
-        "bias_metrics": bias_metrics,
-        "feature_importance": feature_importance[:10],
-        "bias_sources": bias_sources,
+
+def simulate_feature_drop(
+    df: pd.DataFrame,
+    protected_attributes: list[str],
+    outcome_column: str,
+    model_type: str,
+    proxy_flags: list[dict[str, Any]],
+) -> dict[str, Any]:
+    drop_features = sorted(
+        {
+            *protected_attributes,
+            *(item["feature"] for item in proxy_flags),
+        }
+        & set(df.columns)
+    )
+    if not drop_features:
+        return {
+            "available": False,
+            "reason": "No protected or proxy features were available to remove for a quick mitigation simulation.",
+        }
+
+    X = df.drop(columns=[outcome_column, *drop_features], errors="ignore")
+    y = df[outcome_column].astype(int)
+    if X.empty:
+        return {
+            "available": False,
+            "reason": "Removing protected and proxy features leaves no model features to train on.",
+            "dropped_features": drop_features,
+        }
+
+    try:
+        stratify = y if y.value_counts().min() >= 2 else None
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=0.2,
+            random_state=42,
+            stratify=stratify,
+        )
+        pipeline = build_model_pipeline(X, model_type)
+        pipeline.fit(X_train, y_train)
+        y_pred, _ = normalize_prediction_output(pipeline.predict(X_test))
+        metric_rows = []
+        for protected in protected_attributes:
+            sensitive = grouped_sensitive_feature(df.loc[X_test.index, protected], protected)
+            dp = safe_metric(
+                lambda: demographic_parity_difference(y_test, y_pred, sensitive_features=sensitive),
+                default=0.0,
+            )
+            eo = safe_metric(
+                lambda: equalized_odds_difference(y_test, y_pred, sensitive_features=sensitive),
+                default=0.0,
+            )
+            metric_rows.append(
+                {
+                    "protected_attribute": protected,
+                    "demographic_parity_difference": round(float(dp), 4),
+                    "equalized_odds_difference": round(float(eo), 4),
+                }
+            )
+        return {
+            "available": True,
+            "strategy": "Retrain after dropping protected attributes and proxy-risk features",
+            "dropped_features": drop_features,
+            "accuracy": round(float(accuracy_score(y_test, y_pred)), 4),
+            "max_demographic_parity_difference": max(
+                (item["demographic_parity_difference"] for item in metric_rows),
+                default=0.0,
+            ),
+            "max_equalized_odds_difference": max(
+                (item["equalized_odds_difference"] for item in metric_rows),
+                default=0.0,
+            ),
+            "metrics": metric_rows,
+            "note": "This is a quick diagnostic simulation, not a replacement for model governance or production retraining.",
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"Simulation failed: {exc}",
+            "dropped_features": drop_features,
+        }
+
+
+def predict_with_uploaded_model(model: Any, X: pd.DataFrame) -> tuple[Any, pd.DataFrame, dict[str, Any]]:
+    errors: list[str] = []
+    expected_features = get_model_expected_features(model)
+    candidates: list[tuple[str, pd.DataFrame, str]] = []
+
+    if expected_features:
+        missing = [feature for feature in expected_features if feature not in X.columns]
+        if missing:
+            errors.append(f"expected_columns: missing {', '.join(missing[:10])}")
+        else:
+            candidates.append(
+                (
+                    "expected_columns",
+                    X[expected_features],
+                    f"Used model-declared feature columns: {', '.join(expected_features[:12])}.",
+                )
+            )
+
+    candidates.append(("raw_dataframe", X, "Passed the cleaned raw DataFrame to model.predict(...)."))
+    numeric_coded = numeric_code_dataframe(X)
+    candidates.append(("numeric_coded_dataframe", numeric_coded, "Converted categorical columns to stable numeric category codes."))
+
+    numeric_only = pd.DataFrame(
+        {
+            column: numeric
+            for column in X.columns
+            for numeric, is_numeric in [coerce_numeric_if_reasonable(X[column])]
+            if is_numeric
+        },
+        index=X.index,
+    )
+    expected_count = getattr(model, "n_features_in_", None)
+    if expected_count is not None and not numeric_only.empty and int(expected_count) == numeric_only.shape[1]:
+        candidates.append(("numeric_only_dataframe", numeric_only, "Used only numeric columns to match model.n_features_in_."))
+
+    for strategy, candidate, details in candidates:
+        try:
+            predictions = model.predict(candidate)
+            if len(predictions) != len(X):
+                errors.append(f"{strategy}: returned {len(predictions)} predictions for {len(X)} rows")
+                continue
+            return predictions, candidate, {
+                "strategy": strategy,
+                "details": details,
+                "features_used": list(candidate.columns),
+                "warnings": [
+                    "Pickle/joblib model loading can execute code. Only upload models from trusted sources.",
+                ],
+            }
+        except Exception as exc:
+            errors.append(f"{strategy}: {exc}")
+
+    raise AuditError(
+        "Uploaded model could not generate predictions for this CSV. "
+        "Use a sklearn Pipeline that includes preprocessing, or upload a CSV with columns matching the model's training features. "
+        f"Attempts: {' | '.join(errors[-4:])}"
+    )
+
+
+def get_model_expected_features(model: Any) -> list[str]:
+    features = getattr(model, "feature_names_in_", None)
+    if features is not None:
+        return [str(item) for item in list(features)]
+    if isinstance(model, Pipeline):
+        for _, step in model.steps:
+            features = getattr(step, "feature_names_in_", None)
+            if features is not None:
+                return [str(item) for item in list(features)]
+    return []
+
+
+def numeric_code_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    encoded = pd.DataFrame(index=df.index)
+    for column in df.columns:
+        numeric, is_numeric = coerce_numeric_if_reasonable(df[column])
+        if is_numeric:
+            encoded[column] = numeric.fillna(numeric.median() if not pd.isna(numeric.median()) else 0)
+        else:
+            encoded[column] = pd.Categorical(df[column].fillna("Unknown").astype(str)).codes
+    return encoded
+
+
+def normalize_prediction_output(raw_predictions: Any) -> tuple[pd.Series, dict[str, Any]]:
+    array = np.asarray(raw_predictions)
+    if array.ndim > 1:
+        if array.shape[1] == 1:
+            array = array.ravel()
+        else:
+            raise AuditError("Model predictions must be a one-dimensional binary 0/1 field, not a probability matrix.")
+
+    series = pd.Series(array)
+    validation = {
+        "status": "Pass",
+        "unique_values": [str(value) for value in sorted(series.dropna().unique().tolist(), key=str)],
+        "mapping": {},
+        "warnings": [],
     }
+    if series.isna().any():
+        raise AuditError("Model predictions contain missing values.")
+
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.notna().sum() == len(series):
+        unique_values = sorted(numeric.unique().tolist())
+        if set(unique_values).issubset({0, 1, 0.0, 1.0}):
+            return numeric.astype(int), validation | {"mapping": {"0": 0, "1": 1}}
+        if len(unique_values) == 2:
+            validation["warnings"].append(
+                f"Predictions used numeric labels {unique_values}; the auditor mapped them to 0/1 for analysis."
+            )
+            mapping = {float(unique_values[0]): 0, float(unique_values[1]): 1}
+            validation["mapping"] = {str(key): value for key, value in mapping.items()}
+            return numeric.map(mapping).astype(int), validation
+        raise AuditError("Model predictions must be binary. Received non-binary numeric predictions.")
+
+    normalized = series.map(lambda value: str(value).strip().lower())
+    mapped = normalized.map(label_to_binary)
+    if mapped.notna().sum() == len(series) and set(mapped.unique()).issubset({0, 1}):
+        validation["mapping"] = {
+            str(label): int(label_to_binary(str(label).strip().lower()))
+            for label in sorted(series.astype(str).str.strip().unique())
+        }
+        return mapped.astype(int), validation
+
+    categories = sorted(normalized.unique().tolist())
+    if len(categories) == 2:
+        validation["warnings"].append(
+            f"Predictions used two text labels {categories}; the auditor mapped them alphabetically to 0/1."
+        )
+        mapping = {categories[0]: 0, categories[1]: 1}
+        validation["mapping"] = mapping
+        return normalized.map(mapping).astype(int), validation
+
+    raise AuditError("Model predictions must be binary 0/1 or recognizable binary labels.")
+
+
+def generic_model_feature_importance(model: Any, input_frame: pd.DataFrame) -> list[dict[str, Any]]:
+    if isinstance(model, Pipeline):
+        try:
+            return model_feature_importance(model, input_frame)
+        except Exception:
+            pass
+        estimator = model.steps[-1][1]
+    else:
+        estimator = model
+
+    if hasattr(estimator, "coef_"):
+        raw_importances = np.abs(np.asarray(estimator.coef_))
+        if raw_importances.ndim > 1:
+            raw_importances = raw_importances.mean(axis=0)
+    elif hasattr(estimator, "feature_importances_"):
+        raw_importances = np.asarray(estimator.feature_importances_)
+    else:
+        return []
+
+    if len(raw_importances) != len(input_frame.columns):
+        return []
+
+    max_score = float(np.max(raw_importances)) if len(raw_importances) else 0.0
+    rows = []
+    for rank, (feature, score) in enumerate(
+        sorted(zip(input_frame.columns, raw_importances, strict=False), key=lambda item: item[1], reverse=True),
+        start=1,
+    ):
+        rows.append(
+            {
+                "rank": rank,
+                "feature": str(feature),
+                "importance": round(float(score), 6),
+                "normalized_importance": round(safe_ratio(float(score), max_score, default=0.0), 4),
+            }
+        )
+    return rows
 
 
 def build_model_pipeline(X: pd.DataFrame, model_type: str) -> Pipeline:
@@ -655,6 +1094,19 @@ def calculate_severity(dp_score: float, eo_score: float, proxy_count: int, repre
     return "Low"
 
 
+def calculate_pre_audit_severity(proxy_count: int, representation_ratio: float) -> str:
+    score = min(proxy_count, 3)
+    if representation_ratio < 0.5:
+        score += 3
+    elif representation_ratio < 0.8:
+        score += 2
+    if score >= 5:
+        return "High"
+    if score >= 3:
+        return "Medium"
+    return "Low"
+
+
 def generate_explanation_report(summary: dict[str, Any]) -> dict[str, str]:
     prompt = build_report_prompt(summary)
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
@@ -671,20 +1123,27 @@ def generate_explanation_report(summary: dict[str, Any]) -> dict[str, str]:
                 return {"source": f"Gemini ({model_name})", "text": text}
         except Exception as exc:
             return {
-                "source": "Local fallback",
-                "text": f"Gemini report generation failed: {exc}\n\n{build_local_report(summary)}",
+                "source": "Gemini unavailable",
+                "text": f"Gemini report generation failed: {exc}",
             }
-    return {"source": "Local fallback", "text": build_local_report(summary)}
+    return {
+        "source": "Gemini not configured",
+        "text": "Set GEMINI_API_KEY or GOOGLE_API_KEY in your .env file to generate AI-written recommendations.",
+    }
 
 
 def build_report_prompt(summary: dict[str, Any]) -> str:
     compact = {
         "dataset": summary["dataset"],
         "representation": summary["pre_audit"]["representation"],
+        "data_validation": summary["pre_audit"].get("validation", {}),
+        "pre_audit_severity": summary.get("pre_audit_severity"),
         "proxy_flags": summary["pre_audit"]["proxy_flags"][:10],
         "model_performance": summary["model"]["performance"],
+        "prediction_validation": summary["model"].get("prediction_validation", {}),
         "bias_metrics": summary["model"]["bias_metrics"],
         "bias_sources": summary["model"]["bias_sources"],
+        "improvement_simulation": summary["model"].get("improvement_simulation", {}),
         "severity": summary["severity"],
     }
     return textwrap.dedent(
@@ -692,10 +1151,13 @@ def build_report_prompt(summary: dict[str, Any]) -> str:
         You are an AI ethics expert. Based on this bias audit, provide:
         1. A plain English summary of what bias was found and how serious it is.
         2. The real-world impact this bias would have on affected groups.
-        3. Three specific, actionable recommendations to reduce the bias.
-        4. An overall bias severity rating: Low / Medium / High / Critical.
+        3. Why the bias may be happening, based on proxy variables, feature importance, and group outcomes.
+        4. Three specific, actionable recommendations to reduce the bias.
+        5. A short mitigation simulation interpretation if simulation data is present.
+        6. An overall bias severity rating: Low / Medium / High / Critical.
 
         Write for a non-technical manager, not a data scientist.
+        Avoid claiming the model has been fixed. Recommendations should be concrete, cautious, and implementation-ready.
 
         Audit data:
         {compact}

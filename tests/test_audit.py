@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from io import BytesIO
 
+import joblib
 import pandas as pd
 from fastapi.testclient import TestClient
 
-from app.audit import calculate_severity, normalize_outcome, run_audit
+from app.audit import AuditError, build_model_pipeline, calculate_severity, normalize_outcome, run_audit
 from app.main import app
 from app.report import build_pdf_report
 
@@ -106,3 +107,90 @@ def test_upload_and_audit_api_flow() -> None:
     body = audit.json()
     assert body["report_id"]
     assert body["severity"] in {"High", "Critical"}
+
+
+def test_pre_audit_api_flow() -> None:
+    client = TestClient(app)
+    upload = client.post(
+        "/api/upload",
+        files={"file": ("biased.csv", BytesIO(biased_frame().to_csv(index=False).encode()), "text/csv")},
+    )
+    session_id = upload.json()["session_id"]
+
+    response = client.post(
+        "/api/pre-audit",
+        json={
+            "session_id": session_id,
+            "protected_attributes": ["race"],
+            "outcome_column": "loan_approved",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "report_id" not in body
+    assert body["pre_audit"]["validation"]["checks"]
+    assert body["pre_audit_severity"] in {"Low", "Medium", "High"}
+
+
+def test_uploaded_model_api_flow() -> None:
+    client = TestClient(app)
+    df = biased_frame()
+    upload = client.post(
+        "/api/upload",
+        files={"file": ("biased.csv", BytesIO(df.to_csv(index=False).encode()), "text/csv")},
+    )
+    session_id = upload.json()["session_id"]
+
+    X = df.drop(columns=["loan_approved"])
+    y = df["loan_approved"]
+    model = build_model_pipeline(X, "logistic_regression")
+    model.fit(X, y)
+    model_bytes = BytesIO()
+    joblib.dump(model, model_bytes)
+    model_bytes.seek(0)
+
+    model_upload = client.post(
+        "/api/model",
+        data={"session_id": session_id},
+        files={"file": ("loan_model.joblib", model_bytes, "application/octet-stream")},
+    )
+    assert model_upload.status_code == 200
+    model_id = model_upload.json()["model_id"]
+
+    audit = client.post(
+        "/api/audit",
+        json={
+            "session_id": session_id,
+            "protected_attributes": ["race"],
+            "outcome_column": "loan_approved",
+            "audit_mode": "uploaded_model",
+            "model_id": model_id,
+        },
+    )
+
+    assert audit.status_code == 200
+    body = audit.json()
+    assert body["post_audit"]["mode"] == "uploaded_model"
+    assert body["post_audit"]["performance"]["training_samples"] is None
+    assert body["post_audit"]["prediction_validation"]["status"] == "Pass"
+
+
+def test_uploaded_model_predictions_must_be_binary() -> None:
+    class BadModel:
+        def predict(self, X: pd.DataFrame) -> list[float]:
+            return [0.2] * len(X)
+
+    try:
+        run_audit(
+            biased_frame(),
+            protected_attributes=["race"],
+            outcome_column="loan_approved",
+            audit_mode="uploaded_model",
+            uploaded_model=BadModel(),
+            uploaded_model_name="bad.pkl",
+        )
+    except AuditError as exc:
+        assert "binary" in str(exc)
+    else:
+        raise AssertionError("Expected uploaded non-binary predictions to fail")

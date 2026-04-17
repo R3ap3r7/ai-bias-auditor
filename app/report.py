@@ -28,6 +28,8 @@ def build_pdf_report(result: dict[str, Any]) -> bytes:
             styles["BodyText"],
         )
     )
+    if model.get("model_input"):
+        story.append(Paragraph(f"Model input: {model['model_input'].get('details', '')}", styles["BodyText"]))
     story.append(Spacer(1, 12))
 
     performance = model["performance"]
