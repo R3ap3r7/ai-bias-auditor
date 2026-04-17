@@ -1,0 +1,92 @@
+AI Bias Auditor - Important Files and Run Notes
+===============================================
+
+GitHub repository:
+https://github.com/R3ap3r7/ai-bias-auditor
+
+Do not paste or commit real API keys into source files. Put your Gemini key in a local .env file:
+
+GEMINI_API_KEY=your-rotated-google-ai-studio-key
+GEMINI_MODEL=gemini-1.5-flash
+
+Because an API key was shared in chat, rotate it in Google AI Studio before using it again.
+
+Local Run
+---------
+1. uv venv --python 3.12
+2. source .venv/bin/activate
+3. uv pip install -r requirements.txt
+4. cp .env.example .env
+5. Edit .env and add your Gemini key.
+6. python scripts/download_demos.py
+7. uvicorn app.main:app --reload
+8. Open http://127.0.0.1:8000
+
+Validation
+----------
+pytest -q
+python -m compileall app scripts tests
+
+Key Files
+---------
+app/main.py
+FastAPI app entry point. Defines the landing page, health check, demo dataset API, CSV upload API, audit API, and PDF report download API.
+
+app/audit.py
+Core bias audit engine. Handles CSV cleaning, missing values, outcome normalization, representation balance, proxy detection, model training, Fairlearn metrics, feature importance, severity scoring, Gemini report generation, and local report fallback.
+
+app/demo_data.py
+Demo dataset registry and loader for COMPAS, UCI Adult, and German Credit. Falls back to synthetic demos if downloaded CSVs are missing.
+
+app/report.py
+Builds downloadable PDF reports with ReportLab.
+
+app/templates/index.html
+Single-page HTML interface for upload, demo selection, column configuration, result sections, report text, and report download.
+
+app/static/app.js
+Frontend behavior for loading demos, uploading CSVs, selecting protected/outcome columns, running audits, and rendering results.
+
+scripts/download_demos.py
+Downloads and preprocesses COMPAS, UCI Adult, and German Credit demo CSVs into data/demos.
+
+tests/test_audit.py
+Regression tests for outcome normalization, representation/proxy/bias detection, Decision Tree path, PDF generation, severity scoring, and upload/audit API flow.
+
+requirements.txt
+Runtime and test dependencies.
+
+pyproject.toml
+Project metadata and pytest configuration.
+
+Dockerfile
+Cloud Run compatible container definition.
+
+.dockerignore
+Files excluded from container builds.
+
+.gitignore
+Files excluded from git, including .env, .venv, caches, and generated output.
+
+.env.example
+Safe template showing which environment variables are needed for Gemini.
+
+data/demos/compas.csv
+Preloaded COMPAS demo dataset.
+
+data/demos/adult.csv
+Preloaded UCI Adult demo dataset.
+
+data/demos/german_credit.csv
+Preloaded German Credit demo dataset.
+
+Current Demo Audit Results
+--------------------------
+COMPAS: High severity, accuracy 0.684, max demographic parity difference 0.4986, max equalized odds difference 0.6791.
+Adult: Critical severity, accuracy 0.856, max demographic parity difference 0.2052, max equalized odds difference 0.6667.
+German Credit: High severity, accuracy 0.71, max demographic parity difference 0.3286, max equalized odds difference 0.4167.
+
+Known Notes
+-----------
+Gemini is optional at runtime. If GEMINI_API_KEY is missing or Gemini fails, the app still produces a deterministic local report so demos and tests continue to work.
+The UI uses Tailwind CDN for MVP speed. For production hardening, replace it with a compiled Tailwind build.
