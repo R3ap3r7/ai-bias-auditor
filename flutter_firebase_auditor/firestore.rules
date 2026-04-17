@@ -6,12 +6,29 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function hasUserProfile() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
     function ownsDocument() {
       return signedIn() && request.auth.uid == resource.data.ownerId;
     }
 
     function createsOwnedDocument() {
-      return signedIn() && request.auth.uid == request.resource.data.ownerId;
+      return hasUserProfile()
+        && request.auth.uid == request.resource.data.ownerId;
+    }
+
+    match /users/{userId} {
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == userId;
+      allow read: if signedIn() && request.auth.uid == userId;
+      allow update: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == userId;
+      allow delete: if false;
     }
 
     match /auditRuns/{auditId} {

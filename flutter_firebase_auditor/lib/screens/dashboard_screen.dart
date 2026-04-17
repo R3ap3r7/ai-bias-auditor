@@ -1,4 +1,5 @@
 import 'package:file_picker/file_picker.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -769,11 +770,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         outcomeColumn: payload.outcomeColumn,
         protectedAttributes: payload.protectedAttributes,
       );
-      await widget.auditRepository.saveAudit(record: record, rawResult: result);
+      if (widget.auditRepository.currentUser != null) {
+        await widget.auditRepository
+            .saveAudit(record: record, rawResult: result);
+      }
       setState(() {
         _auditResult = result;
         _preAuditResult = result;
-        _statusMessage = widget.auditRepository.enabled
+        _statusMessage = widget.auditRepository.currentUser != null
             ? 'Full audit completed and saved to Firebase.'
             : 'Full audit completed. Firebase history is not enabled.';
       });
@@ -881,7 +885,7 @@ class _AuditHistoryRail extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               repository.enabled
-                  ? 'Saved in Firebase'
+                  ? 'Google sign-in controls saved audit history.'
                   : repository.disabledReason,
               style: Theme.of(context)
                   .textTheme
@@ -889,59 +893,117 @@ class _AuditHistoryRail extends StatelessWidget {
                   ?.copyWith(color: AppColors.muted),
             ),
             const SizedBox(height: 20),
-            StreamBuilder<List<AuditRecord>>(
-              stream: repository.watchRecentAudits(),
-              builder: (context, snapshot) {
-                final records = snapshot.data ?? const <AuditRecord>[];
-                if (records.isEmpty) {
-                  return const EmptyState(message: 'No saved audits yet.');
-                }
+            StreamBuilder<User?>(
+              stream: repository.authStateChanges(),
+              builder: (context, authSnapshot) {
+                final user = authSnapshot.data;
                 return Column(
-                  children: records
-                      .map(
-                        (record) => Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: SurfacePanel(
-                            padding: const EdgeInsets.all(14),
-                            backgroundColor: AppColors.surface,
-                            accentColor: _severityColor(record.severity),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        record.datasetName,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .titleMedium,
-                                      ),
-                                    ),
-                                    _severityPill(record.severity),
-                                  ],
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  '${record.modelName} | ${record.outcomeColumn}',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodyMedium
-                                      ?.copyWith(color: AppColors.muted),
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  DateFormat('MMM d, HH:mm')
-                                      .format(record.createdAt.toLocal()),
-                                  style:
-                                      Theme.of(context).textTheme.labelMedium,
-                                ),
-                              ],
-                            ),
-                          ),
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (repository.enabled && user == null)
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: repository.signInWithGoogle,
+                          icon: const Icon(Icons.login),
+                          label: const Text('Sign in with Google'),
                         ),
                       )
-                      .toList(),
+                    else if (user != null)
+                      SurfacePanel(
+                        padding: const EdgeInsets.all(14),
+                        backgroundColor: AppColors.surface,
+                        accentColor: AppColors.success,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              user.displayName ?? 'Signed in user',
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              user.email ?? user.uid,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(color: AppColors.muted),
+                            ),
+                            const SizedBox(height: 12),
+                            OutlinedButton.icon(
+                              onPressed: repository.signOut,
+                              icon: const Icon(Icons.logout),
+                              label: const Text('Sign out'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    const SizedBox(height: 20),
+                    StreamBuilder<List<AuditRecord>>(
+                      stream: repository.watchRecentAudits(),
+                      builder: (context, snapshot) {
+                        final records = snapshot.data ?? const <AuditRecord>[];
+                        if (records.isEmpty) {
+                          return EmptyState(
+                            message: user == null
+                                ? 'Sign in to save and view audit history.'
+                                : 'No saved audits yet.',
+                          );
+                        }
+                        return Column(
+                          children: records
+                              .map(
+                                (record) => Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: SurfacePanel(
+                                    padding: const EdgeInsets.all(14),
+                                    backgroundColor: AppColors.surface,
+                                    accentColor:
+                                        _severityColor(record.severity),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                record.datasetName,
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .titleMedium,
+                                              ),
+                                            ),
+                                            _severityPill(record.severity),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          '${record.modelName} | ${record.outcomeColumn}',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium
+                                              ?.copyWith(
+                                                  color: AppColors.muted),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          DateFormat('MMM d, HH:mm').format(
+                                              record.createdAt.toLocal()),
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .labelMedium,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              )
+                              .toList(),
+                        );
+                      },
+                    ),
+                  ],
                 );
               },
             ),

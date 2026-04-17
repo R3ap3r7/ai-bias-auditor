@@ -11,14 +11,13 @@ class AuditRepository {
     required this.disabledReason,
     this.firestore,
     this.auth,
-    this.ownerId,
   });
 
   final bool enabled;
   final String disabledReason;
   final FirebaseFirestore? firestore;
   final FirebaseAuth? auth;
-  final String? ownerId;
+  User? get currentUser => auth?.currentUser;
 
   static Future<AuditRepository> bootstrap() async {
     if (!DefaultFirebaseOptions.isConfigured) {
@@ -33,13 +32,11 @@ class AuditRepository {
       await Firebase.initializeApp(
           options: DefaultFirebaseOptions.currentPlatform);
       final auth = FirebaseAuth.instance;
-      final credential = await auth.signInAnonymously();
       return AuditRepository._(
         enabled: true,
         disabledReason: '',
         firestore: FirebaseFirestore.instance,
         auth: auth,
-        ownerId: credential.user?.uid,
       );
     } catch (error) {
       return AuditRepository._(
@@ -50,31 +47,67 @@ class AuditRepository {
   }
 
   Stream<List<AuditRecord>> watchRecentAudits() {
-    if (!enabled || firestore == null || ownerId == null) {
+    if (!enabled || firestore == null || auth == null) {
       return Stream.value(const []);
     }
 
-    return firestore!
-        .collection('auditRuns')
-        .where('ownerId', isEqualTo: ownerId)
-        .orderBy('createdAt', descending: true)
-        .limit(25)
-        .snapshots()
-        .map(
-          (snapshot) => snapshot.docs.map(AuditRecord.fromFirestore).toList(),
-        );
+    return auth!.authStateChanges().asyncExpand((user) {
+      if (user == null) {
+        return Stream.value(const <AuditRecord>[]);
+      }
+
+      return firestore!
+          .collection('auditRuns')
+          .where('ownerId', isEqualTo: user.uid)
+          .orderBy('createdAt', descending: true)
+          .limit(25)
+          .snapshots()
+          .map(
+            (snapshot) => snapshot.docs.map(AuditRecord.fromFirestore).toList(),
+          );
+    });
+  }
+
+  Stream<User?> authStateChanges() {
+    if (!enabled || auth == null) {
+      return Stream.value(null);
+    }
+    return auth!.authStateChanges();
+  }
+
+  Future<void> signInWithGoogle() async {
+    if (!enabled || auth == null || firestore == null) {
+      throw StateError(disabledReason);
+    }
+
+    final provider = GoogleAuthProvider()
+      ..setCustomParameters({'prompt': 'select_account'});
+    final credential = await auth!.signInWithPopup(provider);
+    final user = credential.user;
+    if (user != null) {
+      await _upsertUserProfile(user);
+    }
+  }
+
+  Future<void> signOut() async {
+    if (!enabled || auth == null) {
+      return;
+    }
+    await auth!.signOut();
   }
 
   Future<void> saveAudit({
     required AuditRecord record,
     required Map<String, dynamic> rawResult,
   }) async {
-    if (!enabled || firestore == null || ownerId == null) {
+    final user = currentUser;
+    if (!enabled || firestore == null || user == null) {
       return;
     }
 
+    await _upsertUserProfile(user);
     final auditRef = firestore!.collection('auditRuns').doc(record.id);
-    await auditRef.set(record.toFirestore(ownerId!));
+    await auditRef.set(record.toFirestore(user.uid));
 
     final model = _readMap(rawResult['model']);
     final trace = _readMap(model['audit_trace']);
@@ -98,6 +131,26 @@ class AuditRepository {
       });
     }
     await batch.commit();
+  }
+
+  Future<void> _upsertUserProfile(User user) async {
+    if (firestore == null) return;
+
+    final userRef = firestore!.collection('users').doc(user.uid);
+    final existing = await userRef.get();
+    final data = <String, dynamic>{
+      'uid': user.uid,
+      'email': user.email,
+      'displayName': user.displayName,
+      'photoUrl': user.photoURL,
+      'providerIds':
+          user.providerData.map((provider) => provider.providerId).toList(),
+      'lastLoginAt': FieldValue.serverTimestamp(),
+    };
+    if (!existing.exists) {
+      data['createdAt'] = FieldValue.serverTimestamp();
+    }
+    await userRef.set(data, SetOptions(merge: true));
   }
 }
 

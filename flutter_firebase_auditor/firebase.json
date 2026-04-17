@@ -16,5 +16,17 @@
   "firestore": {
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
+  },
+  "flutter": {
+    "platforms": {
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "ai-bias-auditor-2604171603",
+          "configurations": {
+            "web": "1:49788943765:web:b1682c0470abd4cab84a9c"
+          }
+        }
+      }
+    }
   }
 }

@@ -5,3 +5,4 @@
 .pub-cache/
 build/
 .firebaserc
+.firebase/
