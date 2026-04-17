@@ -18,6 +18,7 @@ def build_pdf_report(result: dict[str, Any]) -> bytes:
     dataset = result["dataset"]
     model = result["model"]
     pre_audit = result["pre_audit"]
+    traceability = result.get("traceability", {})
 
     story.append(Paragraph("AI Bias Auditor Report", styles["Title"]))
     story.append(Spacer(1, 12))
@@ -30,6 +31,10 @@ def build_pdf_report(result: dict[str, Any]) -> bytes:
     )
     if model.get("model_input"):
         story.append(Paragraph(f"Model input: {model['model_input'].get('details', '')}", styles["BodyText"]))
+    if traceability:
+        story.append(Paragraph(f"Run ID: {traceability.get('run_id', '')}", styles["BodyText"]))
+        story.append(Paragraph(f"Dataset hash: {traceability.get('dataset_hash_sha256', '')}", styles["BodyText"]))
+        story.append(Paragraph(f"Model fingerprint: {traceability.get('model_fingerprint_sha256', '')}", styles["BodyText"]))
     story.append(Spacer(1, 12))
 
     performance = model["performance"]
@@ -81,6 +86,61 @@ def build_pdf_report(result: dict[str, Any]) -> bytes:
         )
     story.append(simple_table(metric_rows))
     story.append(Spacer(1, 12))
+
+    conditional = model.get("conditional_fairness", {})
+    if conditional.get("available"):
+        story.append(Paragraph("Same-Background Fairness", styles["Heading2"]))
+        conditional_rows = [["Protected attribute", "Controls", "Cohorts", "Weighted gap", "Status"]]
+        for item in conditional.get("results", []):
+            conditional_rows.append(
+                [
+                    item.get("protected_attribute", ""),
+                    ", ".join(item.get("control_features", [])),
+                    item.get("cohorts_analyzed", ""),
+                    item.get("weighted_selection_gap", ""),
+                    item.get("status", ""),
+                ]
+            )
+        story.append(simple_table(conditional_rows))
+        story.append(Spacer(1, 12))
+
+    intersectional = model.get("intersectional_bias", {})
+    if intersectional.get("available"):
+        story.append(Paragraph("Intersectional Bias", styles["Heading2"]))
+        intersectional_rows = [["Group", "Count", "Selection rate", "Accuracy", "Small group"]]
+        for item in intersectional.get("groups", [])[:8]:
+            intersectional_rows.append(
+                [
+                    item.get("group", ""),
+                    item.get("count", ""),
+                    item.get("selection_rate", ""),
+                    item.get("accuracy", ""),
+                    "Yes" if item.get("small_group_warning") else "",
+                ]
+            )
+        story.append(simple_table(intersectional_rows))
+        story.append(Spacer(1, 12))
+
+    audit_trace = model.get("audit_trace", {})
+    if audit_trace.get("records"):
+        story.append(Paragraph("Decision Audit Trace", styles["Heading2"]))
+        trace_rows = [["Row", "Prediction", "Actual", "Reason", "Top contributing features"]]
+        for item in audit_trace.get("records", [])[:8]:
+            contributors = ", ".join(
+                f"{contribution.get('feature')} ({contribution.get('contribution')})"
+                for contribution in item.get("top_contributions", [])[:3]
+            )
+            trace_rows.append(
+                [
+                    item.get("row_id", ""),
+                    item.get("prediction", ""),
+                    item.get("actual", ""),
+                    item.get("risk_reason", ""),
+                    contributors,
+                ]
+            )
+        story.append(simple_table(trace_rows))
+        story.append(Spacer(1, 12))
 
     story.append(Paragraph("Proxy Risks", styles["Heading2"]))
     proxy_rows = [["Feature", "Protected attribute", "Strength", "Risk"]]

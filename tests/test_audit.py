@@ -67,6 +67,9 @@ def test_run_audit_flags_representation_proxy_and_bias_sources() -> None:
     assert race_metric["demographic_parity_difference"] > 0.2
     assert result["severity"] in {"High", "Critical"}
     assert result["report"]["text"]
+    assert result["traceability"]["run_id"]
+    assert result["traceability"]["dataset_hash_sha256"]
+    assert "Set GEMINI_API_KEY" not in result["report"]["text"]
 
 
 def test_decision_tree_path_and_pdf_generation() -> None:
@@ -98,6 +101,29 @@ def test_compare_all_tunes_and_recommends_a_model() -> None:
     assert result["model"]["selected_model_key"] == selected[0]["model_key"]
     assert result["model"]["tuning"]["status"]
     assert selected[0]["audit_selection_score"] is not None
+    assert result["model"]["audit_trace"]["records"]
+    assert result["model"]["audit_trace"]["records"][0]["top_contributions"]
+    assert result["model"]["conditional_fairness"]["results"]
+    assert result["model"]["intersectional_bias"]["available"] is False
+
+
+def test_intersectional_analysis_and_traceability() -> None:
+    result = run_audit(
+        biased_frame(),
+        protected_attributes=["race", "gender"],
+        outcome_column="loan_approved",
+        model_type="decision_tree",
+    )
+
+    intersectional = result["model"]["intersectional_bias"]
+    trace_record = result["model"]["audit_trace"]["records"][0]
+
+    assert intersectional["available"] is True
+    assert intersectional["groups"]
+    assert "race=" in intersectional["groups"][0]["group"]
+    assert trace_record["row_id"] is not None
+    assert trace_record["model_relied_on"]
+    assert result["traceability"]["model_fingerprint_sha256"]
 
 
 @pytest.mark.parametrize(

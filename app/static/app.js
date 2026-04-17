@@ -35,6 +35,7 @@ const els = {
   postAuditSection: document.getElementById("postAuditSection"),
   performanceSection: document.getElementById("performanceSection"),
   biasSection: document.getElementById("biasSection"),
+  governanceSection: document.getElementById("governanceSection"),
   featureSection: document.getElementById("featureSection"),
   reportSection: document.getElementById("reportSection"),
   modelAuditSummary: document.getElementById("modelAuditSummary"),
@@ -42,6 +43,10 @@ const els = {
   predictionValidationTable: document.getElementById("predictionValidationTable"),
   modelPerformance: document.getElementById("modelPerformance"),
   biasScorecard: document.getElementById("biasScorecard"),
+  traceabilityTable: document.getElementById("traceabilityTable"),
+  conditionalFairness: document.getElementById("conditionalFairness"),
+  intersectionalBias: document.getElementById("intersectionalBias"),
+  auditTrace: document.getElementById("auditTrace"),
   featureImportance: document.getElementById("featureImportance"),
   biasSources: document.getElementById("biasSources"),
   simulationSummary: document.getElementById("simulationSummary"),
@@ -274,6 +279,7 @@ function renderFullAuditResult(result) {
   renderDataOverview(result);
   renderPreAudit(result.pre_audit);
   renderPostAudit(result.post_audit || result.model);
+  renderGovernance(result);
   renderReport(result);
   els.config.scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -342,6 +348,7 @@ function renderPostAudit(postAudit) {
   els.postAuditSection.classList.remove("hidden");
   els.performanceSection.classList.remove("hidden");
   els.biasSection.classList.remove("hidden");
+  els.governanceSection.classList.remove("hidden");
   els.featureSection.classList.remove("hidden");
   els.reportSection.classList.remove("hidden");
 
@@ -373,6 +380,111 @@ function renderPostAudit(postAudit) {
   renderBiasScorecard(postAudit.bias_metrics);
   renderFeatureImportance(postAudit.feature_importance || [], postAudit.bias_sources || []);
   renderSimulation(postAudit.improvement_simulation);
+}
+
+function renderGovernance(result) {
+  const postAudit = result.post_audit || result.model;
+  renderTraceability(result.traceability || {});
+  renderConditionalFairness(postAudit.conditional_fairness || {});
+  renderIntersectionalBias(postAudit.intersectional_bias || {});
+  renderAuditTrace(postAudit.audit_trace || {});
+}
+
+function renderTraceability(traceability) {
+  const rows = [
+    ["Field", "Value"],
+    ["Run ID", traceability.run_id || ""],
+    ["Created UTC", traceability.created_at_utc || ""],
+    ["Dataset hash", traceability.dataset_hash_sha256 || ""],
+    ["Model fingerprint", traceability.model_fingerprint_sha256 || ""],
+    ["Policy", JSON.stringify(traceability.policy || {})],
+  ];
+  els.traceabilityTable.innerHTML = table(rows);
+}
+
+function renderConditionalFairness(conditional) {
+  if (!conditional.available) {
+    els.conditionalFairness.innerHTML = `<p class="text-sm text-zinc-600">${escapeHtml(conditional.reason || "Conditional fairness analysis is unavailable.")}</p>`;
+    return;
+  }
+  els.conditionalFairness.innerHTML = conditional.results
+    .map((item) => {
+      const rows = [["Cohort", "Count", "Highest group", "Highest rate", "Lowest group", "Lowest rate", "Gap", "Status"]];
+      for (const cohort of item.worst_cohorts || []) {
+        rows.push([
+          cohort.cohort,
+          cohort.count,
+          cohort.highest_group,
+          percent(cohort.highest_selection_rate),
+          cohort.lowest_group,
+          percent(cohort.lowest_selection_rate),
+          cohort.selection_gap,
+          raw(badge(cohort.status)),
+        ]);
+      }
+      if (rows.length === 1) rows.push(["No comparable cohorts", "", "", "", "", "", "", ""]);
+      return `
+        <div>
+          <div class="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+            <h4 class="font-semibold">${escapeHtml(item.protected_attribute)}</h4>
+            <p class="text-sm text-zinc-600">Controls: ${escapeHtml((item.control_features || []).join(", "))} | Weighted gap ${item.weighted_selection_gap} | ${item.status}</p>
+          </div>
+          <div class="mt-2 overflow-x-auto">${table(rows)}</div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function renderIntersectionalBias(intersectional) {
+  if (!intersectional.available) {
+    els.intersectionalBias.innerHTML = `<p class="text-sm text-zinc-600">${escapeHtml(intersectional.reason || "Intersectional analysis is unavailable.")}</p>`;
+    return;
+  }
+  const rows = [["Group", "Count", "Positive predictions", "Selection rate", "Ratio", "Accuracy", "Small group"]];
+  for (const group of intersectional.groups || []) {
+    rows.push([
+      group.group,
+      group.count,
+      group.positive_predictions,
+      percent(group.selection_rate),
+      group.ratio_to_highest,
+      group.accuracy,
+      group.small_group_warning ? raw(badge("Warn")) : "",
+    ]);
+  }
+  els.intersectionalBias.innerHTML = table(rows);
+}
+
+function renderAuditTrace(trace) {
+  if (!trace.explainability_available || !trace.records?.length) {
+    els.auditTrace.innerHTML = `<p class="text-sm text-zinc-600">${escapeHtml(trace.reason || "No row-level audit trace records were generated.")}</p>`;
+    return;
+  }
+  els.auditTrace.innerHTML = trace.records
+    .map((record) => {
+      const rows = [["Feature", "Value", "Baseline", "Contribution", "Direction"]];
+      for (const contribution of record.top_contributions || []) {
+        rows.push([
+          contribution.feature,
+          contribution.value,
+          contribution.baseline,
+          contribution.contribution,
+          contribution.direction,
+        ]);
+      }
+      return `
+        <div class="rounded-md border border-zinc-200 p-3">
+          <div class="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+            <h4 class="font-semibold">Row ${escapeHtml(record.row_id)}</h4>
+            <p class="text-sm text-zinc-600">Prediction ${record.prediction}, actual ${record.actual}, score ${record.decision_score}</p>
+          </div>
+          <p class="mt-1 text-sm text-zinc-600">${escapeHtml(record.risk_reason)} | Protected: ${escapeHtml(JSON.stringify(record.protected_attributes || {}))}</p>
+          <div class="mt-2 overflow-x-auto">${table(rows)}</div>
+        </div>
+      `;
+    })
+    .join("");
 }
 
 function renderModelComparison(rows) {
@@ -520,6 +632,7 @@ function hidePostAuditSections() {
   els.postAuditSection.classList.add("hidden");
   els.performanceSection.classList.add("hidden");
   els.biasSection.classList.add("hidden");
+  els.governanceSection.classList.add("hidden");
   els.featureSection.classList.add("hidden");
   els.reportSection.classList.add("hidden");
 }
