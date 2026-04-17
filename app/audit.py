@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import textwrap
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,11 +11,16 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from sklearn.compose import ColumnTransformer
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.ensemble import AdaBoostClassifier, ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, precision_score, recall_score
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, precision_score, recall_score
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_split
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.svm import LinearSVC
 from sklearn.tree import DecisionTreeClassifier
 
 try:
@@ -90,8 +96,60 @@ NEGATIVE_LABELS = {
 }
 
 MODEL_LABELS = {
+    "compare_all": "Compare All Tuned Models",
     "logistic_regression": "Logistic Regression",
     "decision_tree": "Decision Tree",
+    "random_forest": "Random Forest",
+    "extra_trees": "Extra Trees",
+    "gradient_boosting": "Gradient Boosting",
+    "ada_boost": "AdaBoost",
+    "linear_svm": "Linear SVM",
+    "knn": "K-Nearest Neighbors",
+    "gaussian_nb": "Gaussian Naive Bayes",
+}
+
+TRAINABLE_MODEL_KEYS = [key for key in MODEL_LABELS if key != "compare_all"]
+TUNING_SAMPLE_LIMIT = 2500
+MAX_CV_FOLDS = 2
+MODEL_PARAM_GRIDS: dict[str, dict[str, list[Any]]] = {
+    "logistic_regression": {
+        "model__C": [0.5, 1.5],
+        "model__class_weight": [None, "balanced"],
+    },
+    "decision_tree": {
+        "model__max_depth": [4, 8, None],
+        "model__min_samples_leaf": [5, 15],
+        "model__class_weight": [None, "balanced"],
+    },
+    "random_forest": {
+        "model__max_depth": [6, None],
+        "model__min_samples_leaf": [1, 8],
+        "model__class_weight": [None, "balanced_subsample"],
+    },
+    "extra_trees": {
+        "model__max_depth": [6, None],
+        "model__min_samples_leaf": [1, 8],
+        "model__class_weight": [None, "balanced"],
+    },
+    "gradient_boosting": {
+        "model__n_estimators": [80, 120],
+        "model__learning_rate": [0.05, 0.1],
+    },
+    "ada_boost": {
+        "model__n_estimators": [50, 100],
+        "model__learning_rate": [0.5, 1.0],
+    },
+    "linear_svm": {
+        "model__C": [0.5, 1.5],
+        "model__class_weight": [None, "balanced"],
+    },
+    "knn": {
+        "model__n_neighbors": [7, 21],
+        "model__weights": ["uniform", "distance"],
+    },
+    "gaussian_nb": {
+        "model__var_smoothing": [1e-9, 1e-7],
+    },
 }
 
 AUDIT_MODE_LABELS = {
@@ -156,7 +214,13 @@ def run_audit(
     else:
         if model_type not in MODEL_LABELS:
             raise AuditError("Unsupported model type.")
-        model_results = train_and_audit_model(clean_df, protected_attributes, outcome_column, model_type, pre_audit["proxy_flags"])
+        model_results = train_and_audit_model(
+            clean_df,
+            protected_attributes,
+            outcome_column,
+            model_type,
+            pre_audit["proxy_flags"],
+        )
 
     max_dp = max((item["demographic_parity_difference"] for item in model_results["bias_metrics"]), default=0.0)
     max_eo = max((item["equalized_odds_difference"] for item in model_results["bias_metrics"]), default=0.0)
@@ -482,8 +546,13 @@ def train_and_audit_model(
         stratify=stratify,
     )
 
-    pipeline = build_model_pipeline(X, model_type)
-    pipeline.fit(X_train, y_train)
+    if model_type == "compare_all":
+        selected = compare_and_select_model(X_train, X_test, y_train, y_test, protected_attributes)
+    else:
+        selected = fit_selected_model(X_train, X_test, y_train, y_test, protected_attributes, model_type)
+
+    pipeline = selected["pipeline"]
+    selected_model_type = selected["model_key"]
     y_pred, prediction_validation = normalize_prediction_output(pipeline.predict(X_test))
     feature_importance = model_feature_importance(pipeline, X)
     result = build_post_audit_result(
@@ -493,14 +562,259 @@ def train_and_audit_model(
         protected_attributes,
         proxy_flags,
         feature_importance,
-        model_type=MODEL_LABELS[model_type],
+        model_type=MODEL_LABELS[selected_model_type],
         mode="train",
         training_samples=int(len(X_train)),
         prediction_validation=prediction_validation,
-        model_input={"strategy": "auditor_pipeline", "details": "The auditor trained a preprocessing + model pipeline."},
+        model_input={
+            "strategy": "auditor_pipeline",
+            "details": "The auditor tuned hyperparameters locally, trained the selected preprocessing + model pipeline, and evaluated it on the held-out test split.",
+        },
     )
-    result["improvement_simulation"] = simulate_feature_drop(df, protected_attributes, outcome_column, model_type, proxy_flags)
+    result["selected_model_key"] = selected_model_type
+    result["requested_model_type"] = MODEL_LABELS[model_type]
+    result["tuning"] = selected["tuning"]
+    result["model_comparison"] = selected["model_comparison"]
+    result["improvement_simulation"] = simulate_feature_drop(
+        df,
+        protected_attributes,
+        outcome_column,
+        selected_model_type,
+        proxy_flags,
+        selected["tuning"].get("best_params", {}),
+    )
     return result
+
+
+def fit_selected_model(
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    y_train: pd.Series,
+    y_test: pd.Series,
+    protected_attributes: list[str],
+    model_type: str,
+) -> dict[str, Any]:
+    fitted = fit_tuned_model(X_train, y_train, model_type)
+    y_pred, _ = normalize_prediction_output(fitted["pipeline"].predict(X_test))
+    row = model_comparison_row(
+        model_type,
+        fitted["tuning"],
+        y_test,
+        y_pred,
+        X_test,
+        protected_attributes,
+        selected=True,
+    )
+    return {
+        "pipeline": fitted["pipeline"],
+        "model_key": model_type,
+        "tuning": fitted["tuning"],
+        "model_comparison": [row],
+    }
+
+
+def compare_and_select_model(
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    y_train: pd.Series,
+    y_test: pd.Series,
+    protected_attributes: list[str],
+) -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    selected: dict[str, Any] | None = None
+
+    for candidate_key in TRAINABLE_MODEL_KEYS:
+        try:
+            fitted = fit_tuned_model(X_train, y_train, candidate_key)
+            y_pred, _ = normalize_prediction_output(fitted["pipeline"].predict(X_test))
+            row = model_comparison_row(
+                candidate_key,
+                fitted["tuning"],
+                y_test,
+                y_pred,
+                X_test,
+                protected_attributes,
+                selected=False,
+            )
+            candidates.append({"row": row, **fitted, "model_key": candidate_key})
+            if selected is None or row["audit_selection_score"] > selected["row"]["audit_selection_score"]:
+                selected = candidates[-1]
+        except Exception as exc:
+            candidates.append(
+                {
+                    "row": {
+                        "model_key": candidate_key,
+                        "model": MODEL_LABELS[candidate_key],
+                        "selected": False,
+                        "status": "Failed",
+                        "error": str(exc),
+                        "best_params": {},
+                        "cv_score": None,
+                        "balanced_accuracy": None,
+                        "accuracy": None,
+                        "precision": None,
+                        "recall": None,
+                        "max_demographic_parity_difference": None,
+                        "max_equalized_odds_difference": None,
+                        "audit_selection_score": None,
+                    }
+                }
+            )
+
+    if selected is None:
+        raise AuditError("All local model candidates failed during tuning. Try a simpler CSV or upload a trained model.")
+
+    for candidate in candidates:
+        candidate["row"]["selected"] = candidate.get("model_key") == selected["model_key"]
+
+    return {
+        "pipeline": selected["pipeline"],
+        "model_key": selected["model_key"],
+        "tuning": selected["tuning"],
+        "model_comparison": [candidate["row"] for candidate in candidates],
+    }
+
+
+def fit_tuned_model(X_train: pd.DataFrame, y_train: pd.Series, model_type: str) -> dict[str, Any]:
+    X_tune, y_tune = tuning_sample(X_train, y_train)
+    cv_folds = min(MAX_CV_FOLDS, int(y_tune.value_counts().min())) if y_tune.nunique() == 2 else 0
+    param_grid = MODEL_PARAM_GRIDS.get(model_type, {})
+
+    if cv_folds < 2 or not param_grid:
+        pipeline = build_model_pipeline(X_train, model_type)
+        pipeline.fit(X_train, y_train)
+        return {
+            "pipeline": pipeline,
+            "tuning": {
+                "status": "Default parameters",
+                "best_params": {},
+                "cv_score": None,
+                "cv_folds": cv_folds,
+                "tuning_samples": int(len(X_tune)),
+                "scoring": "balanced_accuracy",
+            },
+        }
+
+    search = GridSearchCV(
+        build_model_pipeline(X_tune, model_type),
+        param_grid=param_grid,
+        scoring="balanced_accuracy",
+        cv=StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42),
+        n_jobs=1,
+        error_score=np.nan,
+    )
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=ConvergenceWarning)
+            search.fit(X_tune, y_tune)
+        if not hasattr(search, "best_params_") or pd.isna(search.best_score_):
+            raise AuditError("No valid hyperparameter combination completed.")
+        pipeline = build_model_pipeline(X_train, model_type)
+        pipeline.set_params(**search.best_params_)
+        pipeline.fit(X_train, y_train)
+        return {
+            "pipeline": pipeline,
+            "tuning": {
+                "status": "Tuned",
+                "best_params": clean_model_params(search.best_params_),
+                "cv_score": round(float(search.best_score_), 4),
+                "cv_folds": cv_folds,
+                "tuning_samples": int(len(X_tune)),
+                "scoring": "balanced_accuracy",
+            },
+        }
+    except Exception as exc:
+        pipeline = build_model_pipeline(X_train, model_type)
+        pipeline.fit(X_train, y_train)
+        return {
+            "pipeline": pipeline,
+            "tuning": {
+                "status": "Tuning failed; default parameters used",
+                "best_params": {},
+                "cv_score": None,
+                "cv_folds": cv_folds,
+                "tuning_samples": int(len(X_tune)),
+                "scoring": "balanced_accuracy",
+                "warning": str(exc),
+            },
+        }
+
+
+def tuning_sample(X_train: pd.DataFrame, y_train: pd.Series) -> tuple[pd.DataFrame, pd.Series]:
+    if len(X_train) <= TUNING_SAMPLE_LIMIT:
+        return X_train, y_train
+    stratify = y_train if y_train.value_counts().min() >= 2 else None
+    X_sample, _, y_sample, _ = train_test_split(
+        X_train,
+        y_train,
+        train_size=TUNING_SAMPLE_LIMIT,
+        random_state=42,
+        stratify=stratify,
+    )
+    return X_sample, y_sample
+
+
+def model_comparison_row(
+    model_type: str,
+    tuning: dict[str, Any],
+    y_true: pd.Series,
+    y_pred: pd.Series,
+    X_eval: pd.DataFrame,
+    protected_attributes: list[str],
+    *,
+    selected: bool,
+) -> dict[str, Any]:
+    fairness = fairness_summary(y_true, y_pred, X_eval, protected_attributes)
+    balanced = float(balanced_accuracy_score(y_true, y_pred))
+    selection_score = balanced - ((fairness["max_demographic_parity_difference"] + fairness["max_equalized_odds_difference"]) / 2)
+    return {
+        "model_key": model_type,
+        "model": MODEL_LABELS[model_type],
+        "selected": selected,
+        "status": tuning.get("status", "Tuned"),
+        "best_params": tuning.get("best_params", {}),
+        "cv_score": tuning.get("cv_score"),
+        "cv_folds": tuning.get("cv_folds"),
+        "tuning_samples": tuning.get("tuning_samples"),
+        "balanced_accuracy": round(balanced, 4),
+        "accuracy": round(float(accuracy_score(y_true, y_pred)), 4),
+        "precision": round(float(precision_score(y_true, y_pred, zero_division=0)), 4),
+        "recall": round(float(recall_score(y_true, y_pred, zero_division=0)), 4),
+        "max_demographic_parity_difference": fairness["max_demographic_parity_difference"],
+        "max_equalized_odds_difference": fairness["max_equalized_odds_difference"],
+        "audit_selection_score": round(float(selection_score), 4),
+    }
+
+
+def fairness_summary(
+    y_true: pd.Series,
+    y_pred: pd.Series,
+    X_eval: pd.DataFrame,
+    protected_attributes: list[str],
+) -> dict[str, float]:
+    metric_rows = []
+    for protected in protected_attributes:
+        sensitive = grouped_sensitive_feature(X_eval[protected], protected)
+        dp = safe_metric(
+            lambda: demographic_parity_difference(y_true, y_pred, sensitive_features=sensitive),
+            default=0.0,
+        )
+        eo = safe_metric(
+            lambda: equalized_odds_difference(y_true, y_pred, sensitive_features=sensitive),
+            default=0.0,
+        )
+        metric_rows.append((float(dp), float(eo)))
+    return {
+        "max_demographic_parity_difference": round(max((item[0] for item in metric_rows), default=0.0), 4),
+        "max_equalized_odds_difference": round(max((item[1] for item in metric_rows), default=0.0), 4),
+    }
+
+
+def clean_model_params(params: dict[str, Any]) -> dict[str, Any]:
+    cleaned = {}
+    for key, value in params.items():
+        cleaned[key.replace("model__", "")] = value
+    return cleaned
 
 
 def audit_uploaded_model(
@@ -619,6 +933,8 @@ def build_bias_sources(feature_importance: list[dict[str, Any]], proxy_flags: li
     flagged_features = {item["feature"] for item in proxy_flags}
     bias_sources = []
     for row in feature_importance[:10]:
+        if row["importance"] <= 0:
+            continue
         if row["feature"] in flagged_features:
             related = [item for key, item in proxy_lookup.items() if key[0] == row["feature"]]
             bias_sources.append(
@@ -638,6 +954,7 @@ def simulate_feature_drop(
     outcome_column: str,
     model_type: str,
     proxy_flags: list[dict[str, Any]],
+    model_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     drop_features = sorted(
         {
@@ -670,7 +987,7 @@ def simulate_feature_drop(
             random_state=42,
             stratify=stratify,
         )
-        pipeline = build_model_pipeline(X, model_type)
+        pipeline = build_model_pipeline(X, model_type, model_params=model_params)
         pipeline.fit(X_train, y_train)
         y_pred, _ = normalize_prediction_output(pipeline.predict(X_test))
         metric_rows = []
@@ -889,7 +1206,7 @@ def generic_model_feature_importance(model: Any, input_frame: pd.DataFrame) -> l
     return rows
 
 
-def build_model_pipeline(X: pd.DataFrame, model_type: str) -> Pipeline:
+def build_model_pipeline(X: pd.DataFrame, model_type: str, model_params: dict[str, Any] | None = None) -> Pipeline:
     numeric_features = [column for column in X.columns if coerce_numeric_if_reasonable(X[column])[1]]
     categorical_features = [column for column in X.columns if column not in numeric_features]
 
@@ -902,10 +1219,39 @@ def build_model_pipeline(X: pd.DataFrame, model_type: str) -> Pipeline:
     preprocessor = ColumnTransformer(transformers=transformers, remainder="drop", verbose_feature_names_out=True)
     if model_type == "decision_tree":
         estimator = DecisionTreeClassifier(max_depth=5, min_samples_leaf=10, random_state=42)
+    elif model_type == "random_forest":
+        estimator = RandomForestClassifier(
+            n_estimators=80,
+            max_depth=8,
+            min_samples_leaf=5,
+            random_state=42,
+            n_jobs=-1,
+        )
+    elif model_type == "extra_trees":
+        estimator = ExtraTreesClassifier(
+            n_estimators=100,
+            max_depth=8,
+            min_samples_leaf=5,
+            random_state=42,
+            n_jobs=-1,
+        )
+    elif model_type == "gradient_boosting":
+        estimator = GradientBoostingClassifier(random_state=42)
+    elif model_type == "ada_boost":
+        estimator = AdaBoostClassifier(random_state=42)
+    elif model_type == "linear_svm":
+        estimator = LinearSVC(max_iter=5000, random_state=42)
+    elif model_type == "knn":
+        estimator = KNeighborsClassifier(n_neighbors=15)
+    elif model_type == "gaussian_nb":
+        estimator = GaussianNB()
     else:
-        estimator = LogisticRegression(max_iter=1000, random_state=42)
+        estimator = LogisticRegression(max_iter=2000, random_state=42)
 
-    return Pipeline([("preprocess", preprocessor), ("model", estimator)])
+    pipeline = Pipeline([("preprocess", preprocessor), ("model", estimator)])
+    if model_params:
+        pipeline.set_params(**{f"model__{key}": value for key, value in model_params.items()})
+    return pipeline
 
 
 def group_prediction_table(y_true: pd.Series, y_pred: np.ndarray, sensitive: pd.Series) -> list[dict[str, Any]]:
@@ -944,7 +1290,7 @@ def model_feature_importance(pipeline: Pipeline, X: pd.DataFrame) -> list[dict[s
     elif hasattr(estimator, "feature_importances_"):
         raw_importances = estimator.feature_importances_
     else:
-        raw_importances = np.zeros(len(transformed_names))
+        return []
 
     original_scores = {column: 0.0 for column in X.columns}
     categorical_features = [
@@ -1115,7 +1461,7 @@ def generate_explanation_report(summary: dict[str, Any]) -> dict[str, str]:
             import google.generativeai as genai
 
             genai.configure(api_key=api_key)
-            model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+            model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(prompt)
             text = response.text.strip()
@@ -1140,6 +1486,9 @@ def build_report_prompt(summary: dict[str, Any]) -> str:
         "pre_audit_severity": summary.get("pre_audit_severity"),
         "proxy_flags": summary["pre_audit"]["proxy_flags"][:10],
         "model_performance": summary["model"]["performance"],
+        "selected_model": summary["model"].get("model_type"),
+        "hyperparameter_tuning": summary["model"].get("tuning", {}),
+        "model_comparison": summary["model"].get("model_comparison", [])[:10],
         "prediction_validation": summary["model"].get("prediction_validation", {}),
         "bias_metrics": summary["model"]["bias_metrics"],
         "bias_sources": summary["model"]["bias_sources"],
@@ -1193,7 +1542,7 @@ def build_local_report(summary: dict[str, Any]) -> str:
     return "\n\n".join(
         [
             first_line,
-            f"The model was trained to predict `{dataset['outcome_column']}` using {dataset['rows']} cleaned rows. {proxy_count} proxy-risk feature links were detected.",
+            f"The selected model was {summary['model'].get('model_type')} for `{dataset['outcome_column']}` using {dataset['rows']} cleaned rows. {proxy_count} proxy-risk feature links were detected.",
             source_line,
             "Recommended actions:\n" + "\n".join(f"{index}. {item}" for index, item in enumerate(recommendations, start=1)),
             f"Overall severity rating: {severity}.",

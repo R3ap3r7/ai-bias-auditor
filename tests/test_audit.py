@@ -4,11 +4,18 @@ from io import BytesIO
 
 import joblib
 import pandas as pd
+import pytest
 from fastapi.testclient import TestClient
 
 from app.audit import AuditError, build_model_pipeline, calculate_severity, normalize_outcome, run_audit
 from app.main import app
 from app.report import build_pdf_report
+
+
+@pytest.fixture(autouse=True)
+def disable_gemini_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
 
 def biased_frame() -> pd.DataFrame:
@@ -73,6 +80,49 @@ def test_decision_tree_path_and_pdf_generation() -> None:
 
     assert result["model"]["feature_importance"]
     assert pdf.startswith(b"%PDF")
+
+
+def test_compare_all_tunes_and_recommends_a_model() -> None:
+    result = run_audit(
+        biased_frame(),
+        protected_attributes=["race"],
+        outcome_column="loan_approved",
+        model_type="compare_all",
+    )
+
+    comparison = result["model"]["model_comparison"]
+    selected = [row for row in comparison if row["selected"]]
+
+    assert len(comparison) >= 5
+    assert len(selected) == 1
+    assert result["model"]["selected_model_key"] == selected[0]["model_key"]
+    assert result["model"]["tuning"]["status"]
+    assert selected[0]["audit_selection_score"] is not None
+
+
+@pytest.mark.parametrize(
+    "model_type",
+    [
+        "logistic_regression",
+        "decision_tree",
+        "random_forest",
+        "extra_trees",
+        "gradient_boosting",
+        "ada_boost",
+        "linear_svm",
+        "knn",
+        "gaussian_nb",
+    ],
+)
+def test_supported_model_pipelines_fit(model_type: str) -> None:
+    df = biased_frame().iloc[80:180]
+    X = df.drop(columns=["loan_approved"])
+    y = df["loan_approved"]
+
+    pipeline = build_model_pipeline(X, model_type)
+    pipeline.fit(X, y)
+
+    assert len(pipeline.predict(X.head(5))) == 5
 
 
 def test_severity_logic_matches_mvp_rules() -> None:

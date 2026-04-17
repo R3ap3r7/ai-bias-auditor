@@ -48,6 +48,25 @@ def build_pdf_report(result: dict[str, Any]) -> bytes:
     )
     story.append(Spacer(1, 12))
 
+    if model.get("model_comparison"):
+        story.append(Paragraph("Tuned Model Comparison", styles["Heading2"]))
+        comparison_rows = [["Selected", "Model", "Balanced acc", "Accuracy", "Max DP", "Max EO", "Audit score", "Best params"]]
+        for item in model["model_comparison"][:10]:
+            comparison_rows.append(
+                [
+                    "Yes" if item.get("selected") else "",
+                    item.get("model", ""),
+                    item.get("balanced_accuracy", ""),
+                    item.get("accuracy", ""),
+                    item.get("max_demographic_parity_difference", ""),
+                    item.get("max_equalized_odds_difference", ""),
+                    item.get("audit_selection_score", ""),
+                    str(item.get("best_params") or item.get("error") or {}),
+                ]
+            )
+        story.append(simple_table(comparison_rows))
+        story.append(Spacer(1, 12))
+
     story.append(Paragraph("Bias Metrics", styles["Heading2"]))
     metric_rows = [["Protected attribute", "Demographic parity", "Equalized odds", "Impact ratio", "Status"]]
     for item in model["bias_metrics"]:

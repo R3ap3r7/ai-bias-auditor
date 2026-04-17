@@ -7,9 +7,10 @@ https://github.com/R3ap3r7/ai-bias-auditor
 Do not paste or commit real API keys into source files. Put your Gemini key in a local .env file:
 
 GEMINI_API_KEY=your-rotated-google-ai-studio-key
-GEMINI_MODEL=gemini-1.5-flash
+GEMINI_MODEL=gemini-2.5-flash
 
 Because an API key was shared in chat, rotate it in Google AI Studio before using it again.
+Gemini is used only for the final plain-English analysis report. Model selection and hyperparameter tuning run locally.
 
 Local Run
 ---------
@@ -34,10 +35,10 @@ app/main.py
 FastAPI app entry point. Defines the landing page, health check, demo dataset API, CSV upload API, audit API, and PDF report download API.
 
 app/audit.py
-Core bias audit engine. Handles CSV cleaning, missing values, outcome normalization, data-only pre-audit, representation balance, proxy detection, model training, uploaded-model prediction audits, Fairlearn metrics, feature importance, mitigation simulation, severity scoring, and Gemini report generation.
+Core bias audit engine. Handles CSV cleaning, missing values, outcome normalization, data-only pre-audit, representation balance, proxy detection, local hyperparameter tuning, tuned model comparison, uploaded-model prediction audits, Fairlearn metrics, feature importance, mitigation simulation, severity scoring, and Gemini report generation.
 
 app/demo_data.py
-Demo dataset registry and loader for COMPAS, UCI Adult, and German Credit. Falls back to synthetic demos if downloaded CSVs are missing.
+Demo dataset registry and loader for COMPAS, UCI Adult, and German Credit. Requires the downloaded CSVs in data/demos and does not generate synthetic fallback data.
 
 app/report.py
 Builds downloadable PDF reports with ReportLab.
@@ -46,13 +47,13 @@ app/templates/index.html
 Single-page HTML interface for upload, demo selection, column configuration, result sections, report text, and report download.
 
 app/static/app.js
-Frontend behavior for loading demos, uploading CSVs, uploading model artifacts, selecting protected/outcome columns, running separate pre-audits and post-model audits, and rendering results.
+Frontend behavior for loading demos, uploading CSVs, uploading model artifacts, selecting protected/outcome columns, running separate pre-audits and post-model audits, rendering tuned model comparison, and rendering results.
 
 scripts/download_demos.py
 Downloads and preprocesses COMPAS, UCI Adult, and German Credit demo CSVs into data/demos.
 
 tests/test_audit.py
-Regression tests for outcome normalization, representation/proxy/bias detection, Decision Tree path, PDF generation, severity scoring, pre-audit API flow, uploaded model API flow, prediction validation, and upload/audit API flow.
+Regression tests for outcome normalization, representation/proxy/bias detection, tuned model comparison, supported model pipelines, PDF generation, severity scoring, pre-audit API flow, uploaded model API flow, prediction validation, and upload/audit API flow.
 
 requirements.txt
 Runtime and test dependencies.
@@ -83,12 +84,13 @@ Preloaded German Credit demo dataset.
 
 Current Demo Audit Results
 --------------------------
-COMPAS: High severity, accuracy 0.684, max demographic parity difference 0.4986, max equalized odds difference 0.6791.
-Adult: Critical severity, accuracy 0.856, max demographic parity difference 0.2052, max equalized odds difference 0.6667.
-German Credit: High severity, accuracy 0.71, max demographic parity difference 0.3286, max equalized odds difference 0.4167.
+COMPAS: High severity, selected K-Nearest Neighbors, accuracy 0.6868, balanced accuracy 0.6756, max demographic parity difference 0.4144, max equalized odds difference 0.3863.
+Adult: Critical severity, selected Random Forest, accuracy 0.8135, balanced accuracy 0.8327, max demographic parity difference 0.3284, max equalized odds difference 0.3333.
+German Credit: Medium severity, selected Linear SVM, accuracy 0.665, balanced accuracy 0.6607, max demographic parity difference 0.1, max equalized odds difference 0.2143.
 
 Known Notes
 -----------
 Gemini is optional at runtime. If GEMINI_API_KEY is missing or Gemini fails, the app shows an explicit Gemini configuration/failure message instead of pretending an AI-written report was generated.
+Gemini is not used for choosing models. "Compare All Tuned Models" runs local GridSearchCV searches and ranks candidates by balanced accuracy penalized by the largest demographic parity and equalized odds gaps.
 The UI uses Tailwind CDN for MVP speed. For production hardening, replace it with a compiled Tailwind build.
 Uploaded pickle/joblib models can execute code when loaded. Only upload trusted local model artifacts.

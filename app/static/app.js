@@ -38,6 +38,7 @@ const els = {
   featureSection: document.getElementById("featureSection"),
   reportSection: document.getElementById("reportSection"),
   modelAuditSummary: document.getElementById("modelAuditSummary"),
+  modelComparison: document.getElementById("modelComparison"),
   predictionValidationTable: document.getElementById("predictionValidationTable"),
   modelPerformance: document.getElementById("modelPerformance"),
   biasScorecard: document.getElementById("biasScorecard"),
@@ -66,7 +67,7 @@ async function loadDemos() {
       (demo) => `
         <button class="rounded-md border border-zinc-300 px-4 py-3 text-left hover:bg-zinc-50" data-demo-id="${demo.id}">
           <span class="block font-semibold">${escapeHtml(demo.name)}</span>
-          <span class="mt-1 block text-xs text-zinc-500">${demo.available ? "Preloaded" : "Synthetic fallback until downloaded"}</span>
+          <span class="mt-1 block text-xs text-zinc-500">${demo.available ? "Preloaded" : "Run scripts/download_demos.py"}</span>
         </button>
       `,
     )
@@ -344,7 +345,12 @@ function renderPostAudit(postAudit) {
   els.featureSection.classList.remove("hidden");
   els.reportSection.classList.remove("hidden");
 
-  els.modelAuditSummary.textContent = `${postAudit.model_type} using ${postAudit.model_input?.strategy || "unknown input strategy"}.`;
+  const tuning = postAudit.tuning;
+  const tuningText = tuning
+    ? `${tuning.status}. Best parameters: ${Object.keys(tuning.best_params || {}).length ? JSON.stringify(tuning.best_params) : "defaults"}.`
+    : "";
+  els.modelAuditSummary.textContent = `${postAudit.model_type} using ${postAudit.model_input?.strategy || "unknown input strategy"}. ${tuningText}`;
+  renderModelComparison(postAudit.model_comparison || []);
 
   const predictionRows = [["Check", "Status", "Details"]];
   predictionRows.push([
@@ -367,6 +373,33 @@ function renderPostAudit(postAudit) {
   renderBiasScorecard(postAudit.bias_metrics);
   renderFeatureImportance(postAudit.feature_importance || [], postAudit.bias_sources || []);
   renderSimulation(postAudit.improvement_simulation);
+}
+
+function renderModelComparison(rows) {
+  if (!rows.length) {
+    els.modelComparison.innerHTML = `<p class="text-sm text-zinc-600">No local model comparison was run for this audit mode.</p>`;
+    return;
+  }
+  const tableRows = [
+    ["Selected", "Model", "Tuning", "CV", "Balanced acc", "Accuracy", "Precision", "Recall", "Max DP", "Max EO", "Audit score", "Best params"],
+  ];
+  for (const row of rows) {
+    tableRows.push([
+      row.selected ? raw(badge("Selected")) : "",
+      row.model,
+      row.status || "",
+      row.cv_score ?? "",
+      row.balanced_accuracy ?? "",
+      row.accuracy ?? "",
+      row.precision ?? "",
+      row.recall ?? "",
+      row.max_demographic_parity_difference ?? "",
+      row.max_equalized_odds_difference ?? "",
+      row.audit_selection_score ?? "",
+      row.error || JSON.stringify(row.best_params || {}),
+    ]);
+  }
+  els.modelComparison.innerHTML = table(tableRows);
 }
 
 function renderPerformance(performance) {
@@ -550,6 +583,7 @@ function badge(value) {
     Medium: "bg-amber-50 text-amber-800 border-amber-200",
     High: "bg-red-50 text-red-800 border-red-200",
     Critical: "bg-red-100 text-red-900 border-red-300",
+    Selected: "bg-zinc-950 text-white border-zinc-950",
   };
   return `<span class="inline-block rounded-md border px-2 py-1 text-xs font-semibold ${colors[value] || "border-zinc-200"}">${escapeHtml(value)}</span>`;
 }
