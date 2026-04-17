@@ -16,6 +16,10 @@ Open `http://127.0.0.1:8000`.
 
 Gemini is optional for local testing and is used only for the plain-English analysis report. Set `GEMINI_API_KEY` or `GOOGLE_API_KEY` to enable it. The default analysis model is `gemini-2.5-flash`; override it with `GEMINI_MODEL`. Without a key, the app generates a deterministic local analysis report.
 
+## Flutter/Firebase track
+
+A separate Flutter web front end now lives in `flutter_firebase_auditor/`. It uses the existing FastAPI service as the audit engine and Firebase for anonymous audit-history storage. See `flutter_firebase_auditor/README.md` for setup, Firestore rules, and Firebase Hosting deployment.
+
 ## Main flow
 
 1. Upload a CSV or choose a demo dataset.
@@ -44,3 +48,5 @@ gcloud run deploy ai-bias-auditor \
 ```
 
 If you use Gemini in Cloud Run, set `GEMINI_API_KEY` or `GOOGLE_API_KEY` as a service secret or environment variable.
+
+When serving the Flutter web app from Firebase Hosting, also set `CORS_ALLOWED_ORIGINS` on Cloud Run to the Firebase Hosting origins.

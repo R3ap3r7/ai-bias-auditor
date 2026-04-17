@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import uuid
 import pickle
+import os
 from io import BytesIO
 from typing import Any
 
 import joblib
 import pandas as pd
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -21,6 +23,23 @@ from app.report import build_pdf_report
 load_dotenv()
 
 app = FastAPI(title="AI Bias Auditor", version="0.1.0")
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:5000,http://localhost:8080,http://localhost:5173",
+    ).split(",")
+    if origin.strip()
+]
+if cors_origins:
+    allow_all_origins = "*" in cors_origins
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"] if allow_all_origins else cors_origins,
+        allow_credentials=not allow_all_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 

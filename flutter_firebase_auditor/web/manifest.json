@@ -1,0 +1,8 @@
+{
+  "name": "AI Bias Auditor",
+  "short_name": "Bias Auditor",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#F8F9FA",
+  "theme_color": "#005BC0"
+}
