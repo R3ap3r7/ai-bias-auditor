@@ -1,0 +1,123 @@
+AI Bias Auditor - Important Files and Run Notes
+===============================================
+
+GitHub repository:
+https://github.com/R3ap3r7/ai-bias-auditor
+
+Do not paste or commit real API keys into source files. Put your Gemini key in a local .env file:
+
+GEMINI_API_KEY=your-rotated-google-ai-studio-key
+GEMINI_MODEL=gemini-2.5-flash
+
+Because an API key was shared in chat, rotate it in Google AI Studio before using it again.
+Gemini is used only for the final plain-English analysis report. Model selection and hyperparameter tuning run locally.
+
+Local Run
+---------
+1. uv venv --python 3.12
+2. source .venv/bin/activate
+3. uv pip install -r requirements.txt
+4. cp .env.example .env
+5. Edit .env and add your Gemini key.
+6. python scripts/download_demos.py
+7. uvicorn app.main:app --reload
+8. Open http://127.0.0.1:8000
+9. For an external model audit, upload a trusted .joblib, .pkl, or .pickle file after selecting "Use uploaded model".
+10. For the Flutter/Firebase UI, start the backend, then run:
+    cd flutter_firebase_auditor
+    flutter run -d chrome --web-port 5050 --dart-define=API_BASE_URL=http://127.0.0.1:8000 --dart-define=FIREBASE_API_KEY=your-firebase-web-api-key
+
+Validation
+----------
+pytest -q
+python -m compileall app scripts tests
+
+Key Files
+---------
+app/main.py
+FastAPI app entry point. Defines the landing page, health check, demo dataset API, CSV upload API, audit API, and PDF report download API.
+
+app/audit.py
+Core bias audit engine. Handles CSV cleaning, missing values, outcome normalization, data-only pre-audit, representation balance, proxy detection, local hyperparameter tuning, tuned model comparison, uploaded-model prediction audits, Fairlearn metrics, conditional same-background analysis, intersectional analysis, row-level decision audit traces, run traceability metadata, feature importance, mitigation simulation, severity scoring, and Gemini report generation.
+
+app/demo_data.py
+Demo dataset registry and loader for COMPAS, UCI Adult, and German Credit. Requires the downloaded CSVs in data/demos and does not generate synthetic fallback data.
+
+app/report.py
+Builds downloadable PDF reports with ReportLab, including model comparison, traceability, conditional fairness, intersectional bias, and decision audit trace sections.
+
+app/templates/index.html
+Single-page HTML interface for upload, demo selection, column configuration, result sections, governance trace sections, report text, and report download.
+
+app/static/app.js
+Frontend behavior for loading demos, uploading CSVs, uploading model artifacts, selecting protected/outcome columns, running separate pre-audits and post-model audits, rendering tuned model comparison, rendering governance trace sections, and rendering results.
+
+scripts/download_demos.py
+Downloads and preprocesses COMPAS, UCI Adult, and German Credit demo CSVs into data/demos.
+
+tests/test_audit.py
+Regression tests for outcome normalization, representation/proxy/bias detection, tuned model comparison, row-level audit traces, traceability metadata, intersectional analysis, supported model pipelines, PDF generation, severity scoring, pre-audit API flow, uploaded model API flow, prediction validation, and upload/audit API flow.
+
+requirements.txt
+Runtime and test dependencies.
+
+pyproject.toml
+Project metadata and pytest configuration.
+
+Dockerfile
+Cloud Run compatible container definition.
+
+flutter_firebase_auditor/lib/screens/dashboard_screen.dart
+Flutter web UI for login, guest mode, audit workspace, separated results review, saved Firebase history, model upload controls, pre-audit, post-audit, audit trace, and Gemini analysis.
+
+flutter_firebase_auditor/lib/services/backend_client.dart
+Typed Flutter HTTP client for the FastAPI upload, demo, model upload, pre-audit, and full audit APIs.
+
+flutter_firebase_auditor/lib/services/audit_repository.dart
+Firebase Auth and Firestore repository. Handles Google sign-in, user profile upserts, audit summary saves, and trace preview saves.
+
+flutter_firebase_auditor/lib/models/audit_record.dart
+Firestore audit history model used by the Flutter saved-history and recent-run UI.
+
+flutter_firebase_auditor/lib/theme/app_theme.dart
+Material 3 theme and governance palette.
+
+flutter_firebase_auditor/lib/widgets/ui_shell.dart
+Reusable panels, section headers, metric tiles, status pills, and empty states for the Flutter UI.
+
+flutter_firebase_auditor/firebase.json
+Firebase Hosting, Firestore rules, indexes, and Flutter Firebase project configuration.
+
+.dockerignore
+Files excluded from container builds.
+
+.gitignore
+Files excluded from git, including .env, .venv, caches, and generated output.
+
+.env.example
+Safe template showing which environment variables are needed for Gemini and local CORS.
+
+data/demos/compas.csv
+Preloaded COMPAS demo dataset.
+
+data/demos/adult.csv
+Preloaded UCI Adult demo dataset.
+
+data/demos/german_credit.csv
+Preloaded German Credit demo dataset.
+
+Current Demo Audit Results
+--------------------------
+COMPAS: High severity, selected K-Nearest Neighbors, accuracy 0.687, balanced accuracy 0.676, max demographic parity difference 0.414, max equalized odds difference 0.386, 8 decision trace records, Gemini report source gemini-2.5-flash, conditional fairness available, intersectional analysis available.
+Adult: Critical severity, selected Random Forest, accuracy 0.8135, balanced accuracy 0.8327, max demographic parity difference 0.3284, max equalized odds difference 0.3333, 8 decision trace records, conditional fairness available, intersectional analysis available.
+German Credit: Medium severity, selected Linear SVM, accuracy 0.665, balanced accuracy 0.6607, max demographic parity difference 0.1, max equalized odds difference 0.2143, 8 decision trace records, conditional fairness unavailable for comparable cohorts, intersectional analysis unavailable with one protected attribute.
+
+Known Notes
+-----------
+Gemini is optional at runtime. If GEMINI_API_KEY is missing or Gemini fails, the app generates a deterministic local analysis report instead of showing a setup/config message.
+Gemini is not used for choosing models. "Compare All Tuned Models" runs local GridSearchCV searches and ranks candidates by balanced accuracy penalized by the largest demographic parity and equalized odds gaps.
+The decision audit trace uses local baseline perturbation, not full SHAP. It gives per-row contribution evidence for the MVP without adding a heavy dependency or limiting support to one model family.
+The UI uses Tailwind CDN for MVP speed. For production hardening, replace it with a compiled Tailwind build.
+The Flutter/Firebase UI is now the primary hackathon UI track. The original FastAPI HTML UI remains available for local fallback.
+Uploaded pickle/joblib models can execute code when loaded. Only upload trusted local model artifacts.
+Cloud Run deployment is currently blocked until billing is enabled on Google Cloud project ai-bias-auditor-2604171603. Firebase Hosting alone cannot run the Python audit engine.
