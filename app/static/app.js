@@ -53,16 +53,73 @@ const els = {
   reportSource: document.getElementById("reportSource"),
   reportText: document.getElementById("reportText"),
   downloadPdf: document.getElementById("downloadPdf"),
+  fileDropZone: document.getElementById("fileDropZone"),
 };
+
+// Scroll helper functions
+function scrollToApp() {
+  const appEntry = document.getElementById("app-entry");
+  if (appEntry) {
+    appEntry.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+function scrollToFeatures() {
+  const features = document.getElementById("features");
+  if (features) {
+    features.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+// Intersection Observer for scroll animations
+function initScrollAnimations() {
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("visible");
+        }
+      });
+    },
+    { threshold: 0.1, rootMargin: "0px 0px -50px 0px" }
+  );
+
+  document.querySelectorAll(".reveal").forEach((el) => observer.observe(el));
+}
 
 document.addEventListener("DOMContentLoaded", () => {
   loadDemos();
+  initScrollAnimations();
   els.uploadForm.addEventListener("submit", uploadDataset);
   els.modelUploadForm.addEventListener("submit", uploadModel);
   els.auditModeSelect.addEventListener("change", toggleModelUpload);
   els.runPreAuditButton.addEventListener("click", runPreAudit);
   els.runAuditButton.addEventListener("click", runAudit);
   els.resetButton.addEventListener("click", resetApp);
+  
+  // File drop zone effects
+  if (els.fileDropZone) {
+    els.fileDropZone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      els.fileDropZone.style.borderColor = "var(--accent-secondary)";
+      els.fileDropZone.style.background = "var(--bg-tertiary)";
+    });
+    
+    els.fileDropZone.addEventListener("dragleave", () => {
+      els.fileDropZone.style.borderColor = "";
+      els.fileDropZone.style.background = "";
+    });
+    
+    els.fileDropZone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      els.fileDropZone.style.borderColor = "";
+      els.fileDropZone.style.background = "";
+      const files = e.dataTransfer.files;
+      if (files.length > 0 && files[0].name.endsWith(".csv")) {
+        els.csvFile.files = files;
+      }
+    });
+  }
 });
 
 async function loadDemos() {
@@ -70,14 +127,17 @@ async function loadDemos() {
   els.demoButtons.innerHTML = data.demos
     .map(
       (demo) => `
-        <button class="rounded-md border border-zinc-300 px-4 py-3 text-left hover:bg-zinc-50" data-demo-id="${demo.id}">
-          <span class="block font-semibold">${escapeHtml(demo.name)}</span>
-          <span class="mt-1 block text-xs text-zinc-500">${demo.available ? "Preloaded" : "Run scripts/download_demos.py"}</span>
+        <button class="card demo-card" data-demo-id="${demo.id}" ${!demo.available ? 'disabled' : ''}>
+          <span style="font-weight: 600; display: block; margin-bottom: 0.25rem;">${escapeHtml(demo.name)}</span>
+          <span class="status">
+            <span class="status-dot"></span>
+            ${demo.available ? "Preloaded & Ready" : "Run scripts/download_demos.py"}
+          </span>
         </button>
       `,
     )
     .join("");
-  els.demoButtons.querySelectorAll("button").forEach((button) => {
+  els.demoButtons.querySelectorAll("button:not([disabled])").forEach((button) => {
     button.addEventListener("click", () => loadDemo(button.dataset.demoId));
   });
 }
@@ -169,11 +229,11 @@ function configureDataset(data) {
       const checked = (state.defaults.protected_attributes || []).includes(column) ? "checked" : "";
       return `
         <tr>
-          <td class="border border-zinc-200 px-3 py-2">${escapeHtml(column)}</td>
-          <td class="border border-zinc-200 px-3 py-2">
-            <label class="inline-flex items-center gap-2">
-              <input type="checkbox" class="protected-checkbox rounded border-zinc-300" value="${escapeHtml(column)}" ${checked} />
-              <span class="text-xs text-zinc-600">Protected</span>
+          <td>${escapeHtml(column)}</td>
+          <td>
+            <label class="checkbox-wrapper">
+              <input type="checkbox" class="protected-checkbox" value="${escapeHtml(column)}" ${checked} />
+              <span style="font-size: 0.875rem; color: var(--text-secondary);">Protected Attribute</span>
             </label>
           </td>
         </tr>
@@ -190,6 +250,12 @@ function configureDataset(data) {
   if (state.defaults.model_type) {
     els.modelSelect.value = state.defaults.model_type;
   }
+  
+  // Scroll to config section with animation
+  setTimeout(() => {
+    els.config.scrollIntoView({ behavior: "smooth", block: "start" });
+    els.config.classList.add("animate-fade-in-up");
+  }, 100);
 }
 
 function selectedAuditPayload() {
@@ -268,7 +334,12 @@ function renderPreAuditResult(result) {
   renderPreAuditBadge(result.pre_audit_severity);
   renderDataOverview(result);
   renderPreAudit(result.pre_audit);
-  els.config.scrollIntoView({ behavior: "smooth", block: "start" });
+  
+  // Add animation to results sections
+  els.results.classList.add("animate-fade-in-up");
+  setTimeout(() => {
+    els.results.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 100);
 }
 
 function renderFullAuditResult(result) {
@@ -281,16 +352,21 @@ function renderFullAuditResult(result) {
   renderPostAudit(result.post_audit || result.model);
   renderGovernance(result);
   renderReport(result);
-  els.config.scrollIntoView({ behavior: "smooth", block: "start" });
+  
+  // Add animation to results sections
+  els.results.classList.add("animate-fade-in-up");
+  setTimeout(() => {
+    els.results.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 100);
 }
 
 function renderSeverity(severity) {
-  els.severityBadge.className = `rounded-md border px-4 py-2 text-sm font-semibold ${severityClass(severity)}`;
+  els.severityBadge.className = `severity-badge ${severityClass(severity)}`;
   els.severityBadge.textContent = `Post-Audit Severity: ${severity}`;
 }
 
 function renderPreAuditBadge(severity) {
-  els.preAuditBadge.className = `rounded-md border px-3 py-2 text-sm font-semibold ${severityClass(severity)}`;
+  els.preAuditBadge.className = `severity-badge ${severityClass(severity)}`;
   els.preAuditBadge.textContent = `Pre-Audit Severity: ${severity}`;
 }
 
@@ -332,7 +408,7 @@ function renderPreAudit(preAudit) {
       for (const group of item.groups) {
         rows.push([group.group, group.count, percent(group.positive_rate), group.ratio_to_highest, raw(badge(group.status))]);
       }
-      return `<div><h3 class="font-semibold">${escapeHtml(item.protected_attribute)}</h3><div class="mt-2 overflow-x-auto">${table(rows)}</div></div>`;
+      return `<div style="margin-bottom: 1.5rem;"><h3 style="font-weight: 600; margin-bottom: 0.75rem;">${escapeHtml(item.protected_attribute)}</h3><div class="table-container">${table(rows)}</div></div>`;
     })
     .join("");
 
@@ -404,7 +480,7 @@ function renderTraceability(traceability) {
 
 function renderConditionalFairness(conditional) {
   if (!conditional.available) {
-    els.conditionalFairness.innerHTML = `<p class="text-sm text-zinc-600">${escapeHtml(conditional.reason || "Conditional fairness analysis is unavailable.")}</p>`;
+    els.conditionalFairness.innerHTML = `<p style="color: var(--text-muted);">${escapeHtml(conditional.reason || "Conditional fairness analysis is unavailable.")}</p>`;
     return;
   }
   els.conditionalFairness.innerHTML = conditional.results
@@ -424,12 +500,12 @@ function renderConditionalFairness(conditional) {
       }
       if (rows.length === 1) rows.push(["No comparable cohorts", "", "", "", "", "", "", ""]);
       return `
-        <div>
-          <div class="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-            <h4 class="font-semibold">${escapeHtml(item.protected_attribute)}</h4>
-            <p class="text-sm text-zinc-600">Controls: ${escapeHtml((item.control_features || []).join(", "))} | Weighted gap ${item.weighted_selection_gap} | ${item.status}</p>
+        <div style="margin-bottom: 1.5rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
+            <h4 style="font-weight: 600;">${escapeHtml(item.protected_attribute)}</h4>
+            <p style="font-size: 0.875rem; color: var(--text-muted);">Controls: ${escapeHtml((item.control_features || []).join(", "))} | Weighted gap ${item.weighted_selection_gap} | ${item.status}</p>
           </div>
-          <div class="mt-2 overflow-x-auto">${table(rows)}</div>
+          <div class="table-container">${table(rows)}</div>
         </div>
       `;
     })
@@ -438,7 +514,7 @@ function renderConditionalFairness(conditional) {
 
 function renderIntersectionalBias(intersectional) {
   if (!intersectional.available) {
-    els.intersectionalBias.innerHTML = `<p class="text-sm text-zinc-600">${escapeHtml(intersectional.reason || "Intersectional analysis is unavailable.")}</p>`;
+    els.intersectionalBias.innerHTML = `<p style="color: var(--text-muted);">${escapeHtml(intersectional.reason || "Intersectional analysis is unavailable.")}</p>`;
     return;
   }
   const rows = [["Group", "Count", "Positive predictions", "Selection rate", "Ratio", "Accuracy", "Small group"]];
@@ -458,7 +534,7 @@ function renderIntersectionalBias(intersectional) {
 
 function renderAuditTrace(trace) {
   if (!trace.explainability_available || !trace.records?.length) {
-    els.auditTrace.innerHTML = `<p class="text-sm text-zinc-600">${escapeHtml(trace.reason || "No row-level audit trace records were generated.")}</p>`;
+    els.auditTrace.innerHTML = `<p style="color: var(--text-muted);">${escapeHtml(trace.reason || "No row-level audit trace records were generated.")}</p>`;
     return;
   }
   els.auditTrace.innerHTML = trace.records
@@ -474,13 +550,13 @@ function renderAuditTrace(trace) {
         ]);
       }
       return `
-        <div class="rounded-md border border-zinc-200 p-3">
-          <div class="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-            <h4 class="font-semibold">Row ${escapeHtml(record.row_id)}</h4>
-            <p class="text-sm text-zinc-600">Prediction ${record.prediction}, actual ${record.actual}, score ${record.decision_score}</p>
+        <div class="card" style="padding: 1rem; margin-bottom: 1rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
+            <h4 style="font-weight: 600;">Row ${escapeHtml(record.row_id)}</h4>
+            <p style="font-size: 0.875rem; color: var(--text-muted);">Prediction ${record.prediction}, actual ${record.actual}, score ${record.decision_score}</p>
           </div>
-          <p class="mt-1 text-sm text-zinc-600">${escapeHtml(record.risk_reason)} | Protected: ${escapeHtml(JSON.stringify(record.protected_attributes || {}))}</p>
-          <div class="mt-2 overflow-x-auto">${table(rows)}</div>
+          <p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 0.75rem;">${escapeHtml(record.risk_reason)} | Protected: ${escapeHtml(JSON.stringify(record.protected_attributes || {}))}</p>
+          <div class="table-container">${table(rows)}</div>
         </div>
       `;
     })
@@ -489,7 +565,7 @@ function renderAuditTrace(trace) {
 
 function renderModelComparison(rows) {
   if (!rows.length) {
-    els.modelComparison.innerHTML = `<p class="text-sm text-zinc-600">No local model comparison was run for this audit mode.</p>`;
+    els.modelComparison.innerHTML = `<p style="color: var(--text-muted);">No local model comparison was run for this audit mode.</p>`;
     return;
   }
   const tableRows = [
@@ -540,14 +616,14 @@ function renderBiasScorecard(metrics) {
         ]);
       }
       return `
-        <div>
-          <div class="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-            <h3 class="font-semibold">${escapeHtml(metric.protected_attribute)}</h3>
-            <p class="text-sm text-zinc-600">
+        <div style="margin-bottom: 1.5rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
+            <h3 style="font-weight: 600;">${escapeHtml(metric.protected_attribute)}</h3>
+            <p style="font-size: 0.875rem; color: var(--text-muted);">
               DP ${metric.demographic_parity_difference} | EO ${metric.equalized_odds_difference} | Impact ${metric.disparate_impact_ratio} | ${metric.status}
             </p>
           </div>
-          <div class="mt-2 overflow-x-auto">${table(rows)}</div>
+          <div class="table-container">${table(rows)}</div>
         </div>
       `;
     })
@@ -556,20 +632,20 @@ function renderBiasScorecard(metrics) {
 
 function renderFeatureImportance(importances, sources) {
   if (!importances.length) {
-    els.featureImportance.innerHTML = `<p class="text-sm text-zinc-600">Feature importance is not available for this model artifact.</p>`;
+    els.featureImportance.innerHTML = `<p style="color: var(--text-muted);">Feature importance is not available for this model artifact.</p>`;
   } else {
     const max = Math.max(...importances.map((item) => item.normalized_importance), 0.01);
     els.featureImportance.innerHTML = importances
       .map((item) => {
         const width = Math.max((item.normalized_importance / max) * 100, 2);
         return `
-          <div>
-            <div class="mb-1 flex justify-between text-sm">
+          <div style="margin-bottom: 1rem;">
+            <div style="display: flex; justify-content: space-between; font-size: 0.875rem; margin-bottom: 0.25rem;">
               <span>${item.rank}. ${escapeHtml(item.feature)}</span>
               <span>${item.importance}</span>
             </div>
-            <div class="h-3 rounded-md bg-zinc-100">
-              <div class="h-3 rounded-md bg-zinc-900" style="width:${width}%"></div>
+            <div class="progress-bar">
+              <div class="progress-bar-fill" style="width:${width}%"></div>
             </div>
           </div>
         `;
@@ -596,10 +672,10 @@ function renderSimulation(simulation) {
     return;
   }
   els.simulationSummary.innerHTML = `
-    <p>${escapeHtml(simulation.strategy)}</p>
-    <p class="mt-2">Dropped features: ${escapeHtml((simulation.dropped_features || []).join(", "))}</p>
-    <p class="mt-2">Simulated accuracy ${simulation.accuracy}, max DP ${simulation.max_demographic_parity_difference}, max EO ${simulation.max_equalized_odds_difference}.</p>
-    <p class="mt-2 text-xs text-zinc-500">${escapeHtml(simulation.note || "")}</p>
+    <p style="margin-bottom: 0.5rem;">${escapeHtml(simulation.strategy)}</p>
+    <p style="margin-bottom: 0.5rem;">Dropped features: ${escapeHtml((simulation.dropped_features || []).join(", "))}</p>
+    <p style="margin-bottom: 0.5rem;">Simulated accuracy ${simulation.accuracy}, max DP ${simulation.max_demographic_parity_difference}, max EO ${simulation.max_equalized_odds_difference}.</p>
+    <p style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(simulation.note || "")}</p>
   `;
 }
 
@@ -646,34 +722,39 @@ function toggleModelUpload() {
 function setBusy(text) {
   els.runAuditButton.disabled = true;
   els.runPreAuditButton.disabled = true;
-  els.runAuditButton.textContent = text;
+  els.runAuditButton.innerHTML = `<span class="spinner"></span> ${text}`;
 }
 
 function clearBusy() {
   els.runAuditButton.disabled = false;
   els.runPreAuditButton.disabled = false;
-  els.runAuditButton.textContent = "Run Post-Model Audit";
+  els.runAuditButton.innerHTML = `
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+    </svg>
+    Run Post-Model Audit
+  `;
 }
 
 function statCard(label, value) {
   return `
-    <div class="rounded-md border border-zinc-200 bg-zinc-50 p-4">
-      <div class="text-xs uppercase text-zinc-500">${escapeHtml(label)}</div>
-      <div class="mt-1 text-2xl font-semibold">${escapeHtml(String(value))}</div>
+    <div class="card stat-card">
+      <div class="stat-label">${escapeHtml(label)}</div>
+      <div class="stat-value">${escapeHtml(String(value))}</div>
     </div>
   `;
 }
 
 function table(rows) {
   return `
-    <table class="min-w-full border-collapse text-left text-sm">
+    <table class="table">
       <tbody>
         ${rows
           .map(
             (row, index) => `
-              <tr class="${index === 0 ? "bg-zinc-100 text-xs uppercase text-zinc-600" : ""}">
+              <tr class="${index === 0 ? "" : ""}">
                 ${row
-                  .map((cell) => `<td class="border border-zinc-200 px-3 py-2">${cell && cell.__html ? cell.__html : escapeHtml(String(cell))}</td>`)
+                  .map((cell) => `<td>${cell && cell.__html ? cell.__html : escapeHtml(String(cell))}</td>`)
                   .join("")}
               </tr>
             `,
@@ -685,30 +766,30 @@ function table(rows) {
 }
 
 function badge(value) {
-  const colors = {
-    Green: "bg-emerald-50 text-emerald-800 border-emerald-200",
-    Pass: "bg-emerald-50 text-emerald-800 border-emerald-200",
-    Yellow: "bg-amber-50 text-amber-800 border-amber-200",
-    Warn: "bg-amber-50 text-amber-800 border-amber-200",
-    Info: "bg-zinc-50 text-zinc-800 border-zinc-200",
-    Red: "bg-red-50 text-red-800 border-red-200",
-    Low: "bg-emerald-50 text-emerald-800 border-emerald-200",
-    Medium: "bg-amber-50 text-amber-800 border-amber-200",
-    High: "bg-red-50 text-red-800 border-red-200",
-    Critical: "bg-red-100 text-red-900 border-red-300",
-    Selected: "bg-zinc-950 text-white border-zinc-950",
+  const badgeClasses = {
+    Green: "badge-success",
+    Pass: "badge-success",
+    Yellow: "badge-warning",
+    Warn: "badge-warning",
+    Info: "badge-info",
+    Red: "badge-error",
+    Low: "badge-success",
+    Medium: "badge-warning",
+    High: "badge-error",
+    Critical: "badge-error",
+    Selected: "badge-neutral",
   };
-  return `<span class="inline-block rounded-md border px-2 py-1 text-xs font-semibold ${colors[value] || "border-zinc-200"}">${escapeHtml(value)}</span>`;
+  return `<span class="badge ${badgeClasses[value] || "badge-neutral"}">${escapeHtml(value)}</span>`;
 }
 
 function severityClass(severity) {
-  const colors = {
-    Low: "border-emerald-300 bg-emerald-50 text-emerald-800",
-    Medium: "border-amber-300 bg-amber-50 text-amber-800",
-    High: "border-red-300 bg-red-50 text-red-800",
-    Critical: "border-red-500 bg-red-100 text-red-900",
+  const classes = {
+    Low: "severity-low",
+    Medium: "severity-medium",
+    High: "severity-high",
+    Critical: "severity-critical",
   };
-  return colors[severity] || colors.Medium;
+  return classes[severity] || classes.Medium;
 }
 
 function raw(value) {
@@ -734,12 +815,14 @@ function showMessage(text, type = "info") {
   els.message.textContent = text;
   els.message.className =
     type === "error"
-      ? "mb-6 rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800"
-      : "mb-6 rounded-md border border-zinc-300 bg-white px-4 py-3 text-sm text-zinc-700";
+      ? "message message-error"
+      : type === "success"
+      ? "message message-success"
+      : "message message-info";
 }
 
 function clearMessage() {
-  els.message.className = "mb-6 hidden rounded-md border px-4 py-3 text-sm";
+  els.message.className = "message hidden";
   els.message.textContent = "";
 }
 
