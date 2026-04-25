@@ -1,0 +1,79 @@
+{
+  "policy_id": "medical_triage_strict",
+  "version": "1.0.0",
+  "name": "Medical Triage Strict",
+  "description": "Highly conservative policy for medical or clinical decision support.",
+  "fairness_thresholds": {
+    "demographic_parity_difference": {
+      "medium": 0.04,
+      "high": 0.08,
+      "critical": 0.15
+    },
+    "equalized_odds_difference": {
+      "medium": 0.04,
+      "high": 0.08,
+      "critical": 0.15
+    },
+    "disparate_impact_ratio": {
+      "warning_below": 0.9,
+      "critical_below": 0.75
+    },
+    "representation_ratio": {
+      "warning_below": 0.9,
+      "critical_below": 0.7
+    },
+    "proxy_variable_strength": {
+      "warning_above": 0.4,
+      "critical_above": 0.65
+    }
+  },
+  "severity_weights": {
+    "demographic_parity_difference": 0.22,
+    "equalized_odds_difference": 0.32,
+    "disparate_impact_ratio": 0.12,
+    "proxy_variable_risk": 0.12,
+    "underrepresentation": 0.1,
+    "small_group_uncertainty": 0.05,
+    "conditional_fairness_gap": 0.07
+  },
+  "severity_thresholds": {
+    "medium_at_or_above": 0.2,
+    "high_at_or_above": 0.35,
+    "critical_at_or_above": 0.55
+  },
+  "deployment_decision_thresholds": {
+    "safe_to_deploy_below": 0.15,
+    "needs_review_below": 0.35
+  },
+  "model_selection": {
+    "accuracy_metric": "balanced_accuracy",
+    "weights": {
+      "balanced_accuracy": 0.5,
+      "demographic_parity_difference": 0.16,
+      "equalized_odds_difference": 0.24,
+      "disparate_impact_ratio": 0.1
+    },
+    "minimum_recall": 0.75,
+    "maximum_equalized_odds_gap": 0.14,
+    "maximum_demographic_parity_gap": 0.14,
+    "minimum_disparate_impact_ratio": 0.78
+  },
+  "grouping_rules": {
+    "age": {
+      "type": "fixed_bins",
+      "bins": [0, 18, 35, 55, 75, 200],
+      "labels": ["Under 18", "18-34", "35-54", "55-74", "75+"]
+    },
+    "default_numeric": {
+      "type": "quantile",
+      "q": 4
+    },
+    "default_categorical": {
+      "type": "top_k_plus_other",
+      "top_k": 10
+    }
+  },
+  "report_defaults": {
+    "template": "compliance_review"
+  }
+}

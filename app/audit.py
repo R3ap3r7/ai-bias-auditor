@@ -26,6 +26,18 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.svm import LinearSVC
 from sklearn.tree import DecisionTreeClassifier
 
+from app.governance import (
+    build_governance_assessment,
+    gap_status,
+    group_series,
+    grouping_preview,
+    model_policy_failures,
+    model_selection_score,
+    ratio_status,
+    report_template,
+)
+from app.policies import DEFAULT_POLICY_ID, load_policy
+
 try:
     from fairlearn.metrics import (
         MetricFrame,
@@ -158,6 +170,7 @@ MODEL_PARAM_GRIDS: dict[str, dict[str, list[Any]]] = {
 AUDIT_MODE_LABELS = {
     "train": "Train a model in the auditor",
     "uploaded_model": "Audit an uploaded model",
+    "prediction_csv": "Audit a prediction CSV",
 }
 
 
@@ -196,8 +209,27 @@ def run_audit(
     audit_mode: str = "train",
     uploaded_model: Any | None = None,
     uploaded_model_name: str | None = None,
+    uploaded_predictions: pd.Series | None = None,
+    uploaded_prediction_metadata: dict[str, Any] | None = None,
+    policy_id: str = DEFAULT_POLICY_ID,
+    report_template: str | None = None,
+    control_features: list[str] | None = None,
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
+    model_selection_priority: float | None = None,
 ) -> dict[str, Any]:
-    pre_result = run_pre_audit_only(df, protected_attributes, outcome_column)
+    policy = load_policy(policy_id)
+    control_features = control_features or []
+    grouping_overrides = grouping_overrides or {}
+    template_id = report_template or policy.get("report_defaults", {}).get("template", "full_report")
+
+    pre_result = run_pre_audit_only(
+        df,
+        protected_attributes,
+        outcome_column,
+        policy_id=policy["policy_id"],
+        grouping_overrides=grouping_overrides,
+        control_features=control_features,
+    )
     clean_df = pre_result["_clean_dataframe"]
     pre_audit = pre_result["pre_audit"]
 
@@ -213,6 +245,23 @@ def run_audit(
             uploaded_model,
             uploaded_model_name or "Uploaded model",
             pre_audit["proxy_flags"],
+            policy,
+            grouping_overrides,
+            control_features,
+        )
+    elif audit_mode == "prediction_csv":
+        if uploaded_predictions is None:
+            raise AuditError("Upload a prediction CSV before running prediction-only audit.")
+        model_results = audit_prediction_csv(
+            clean_df,
+            protected_attributes,
+            outcome_column,
+            uploaded_predictions,
+            uploaded_prediction_metadata or {},
+            pre_audit["proxy_flags"],
+            policy,
+            grouping_overrides,
+            control_features,
         )
     else:
         if model_type not in MODEL_LABELS:
@@ -223,15 +272,13 @@ def run_audit(
             outcome_column,
             model_type,
             pre_audit["proxy_flags"],
+            policy,
+            grouping_overrides,
+            control_features,
+            model_selection_priority,
         )
 
-    max_dp = max((item["demographic_parity_difference"] for item in model_results["bias_metrics"]), default=0.0)
-    max_eo = max((item["equalized_odds_difference"] for item in model_results["bias_metrics"]), default=0.0)
-    min_representation_ratio = min(
-        (item["minimum_representation_ratio"] for item in pre_audit["representation"]),
-        default=1.0,
-    )
-    severity = calculate_severity(max_dp, max_eo, len(pre_audit["proxy_flags"]), min_representation_ratio)
+    governance = build_governance_assessment(pre_audit, model_results, policy)
 
     summary = {
         "traceability": build_traceability_metadata(
@@ -240,19 +287,29 @@ def run_audit(
             outcome_column,
             audit_mode,
             model_results,
+            policy,
+            template_id,
+            control_features,
+            grouping_overrides,
         ),
         "dataset": pre_result["dataset"],
         "cleaning": pre_result["cleaning"],
         "pre_audit": pre_audit,
+        "grouping_preview": pre_result.get("grouping_preview", []),
         "pre_audit_severity": pre_result["pre_audit_severity"],
         "post_audit": model_results,
         "model": model_results,
-        "severity": severity,
+        "governance": governance,
+        "severity": governance["severity"],
+        "deployment_decision": governance["deployment_decision"],
         "report": {},
     }
     summary["dataset"]["audit_mode"] = AUDIT_MODE_LABELS[audit_mode]
     summary["dataset"]["model_type"] = model_results["model_type"]
-    summary["report"] = generate_explanation_report(summary)
+    summary["dataset"]["policy_id"] = policy["policy_id"]
+    summary["dataset"]["policy_name"] = policy["name"]
+    summary["dataset"]["report_template"] = template_id
+    summary["report"] = generate_explanation_report(summary, template_id=template_id)
     return json_safe(summary)
 
 
@@ -260,11 +317,16 @@ def run_pre_audit_only(
     df: pd.DataFrame,
     protected_attributes: list[str],
     outcome_column: str,
+    policy_id: str = DEFAULT_POLICY_ID,
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
+    control_features: list[str] | None = None,
 ) -> dict[str, Any]:
+    policy = load_policy(policy_id)
+    grouping_overrides = grouping_overrides or {}
     validate_audit_selections(df, protected_attributes, outcome_column)
     cleaned = clean_dataframe(df, outcome_column, protected_attributes)
     clean_df = cleaned.dataframe
-    pre_audit = run_pre_model_audit(clean_df, protected_attributes, outcome_column)
+    pre_audit = run_pre_model_audit(clean_df, protected_attributes, outcome_column, policy, grouping_overrides)
     min_representation_ratio = min(
         (item["minimum_representation_ratio"] for item in pre_audit["representation"]),
         default=1.0,
@@ -275,10 +337,22 @@ def run_pre_audit_only(
             "columns": int(len(clean_df.columns)),
             "outcome_column": outcome_column,
             "protected_attributes": protected_attributes,
+            "policy_id": policy["policy_id"],
         },
         "cleaning": cleaned.cleaning_log,
         "pre_audit": pre_audit,
-        "pre_audit_severity": calculate_pre_audit_severity(len(pre_audit["proxy_flags"]), min_representation_ratio),
+        "pre_audit_severity": calculate_pre_audit_severity(
+            len(pre_audit["proxy_flags"]),
+            min_representation_ratio,
+            policy=policy,
+        ),
+        "policy": {
+            "policy_id": policy["policy_id"],
+            "policy_version": policy["version"],
+            "policy_name": policy["name"],
+        },
+        "grouping_preview": grouping_preview(clean_df, protected_attributes, policy, grouping_overrides),
+        "requested_control_features": control_features or [],
     }
     return json_safe(result) | {"_clean_dataframe": clean_df}
 
@@ -428,11 +502,13 @@ def run_pre_model_audit(
     df: pd.DataFrame,
     protected_attributes: list[str],
     outcome_column: str,
+    policy: dict[str, Any],
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    validation = validate_pre_audit_data(df, protected_attributes, outcome_column)
+    validation = validate_pre_audit_data(df, protected_attributes, outcome_column, policy, grouping_overrides)
     representation = []
     for protected in protected_attributes:
-        grouped = grouped_sensitive_feature(df[protected], protected)
+        grouped = grouped_sensitive_feature(df[protected], protected, policy=policy, grouping_overrides=grouping_overrides)
         rates = df.assign(_group=grouped).groupby("_group", dropna=False)[outcome_column].agg(["count", "mean"])
         rates = rates.sort_values("mean", ascending=False)
         max_rate = float(rates["mean"].max()) if len(rates) else 0.0
@@ -448,7 +524,7 @@ def run_pre_model_audit(
                     "count": int(row["count"]),
                     "positive_rate": round(rate, 4),
                     "ratio_to_highest": round(ratio_to_best, 4),
-                    "status": status_from_threshold(ratio_to_best, warning=0.8, danger=0.5, higher_is_better=True),
+                    "status": ratio_status(ratio_to_best, policy, "representation_ratio"),
                 }
             )
         representation.append(
@@ -460,7 +536,7 @@ def run_pre_model_audit(
             }
         )
 
-    proxy_flags = detect_proxy_variables(df, protected_attributes, outcome_column)
+    proxy_flags = detect_proxy_variables(df, protected_attributes, outcome_column, policy)
     return {"validation": validation, "representation": representation, "proxy_flags": proxy_flags}
 
 
@@ -468,6 +544,8 @@ def validate_pre_audit_data(
     df: pd.DataFrame,
     protected_attributes: list[str],
     outcome_column: str,
+    policy: dict[str, Any],
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     warnings: list[str] = []
     checks: list[dict[str, Any]] = []
@@ -488,7 +566,7 @@ def validate_pre_audit_data(
     )
 
     for protected in protected_attributes:
-        grouped = grouped_sensitive_feature(df[protected], protected)
+        grouped = grouped_sensitive_feature(df[protected], protected, policy=policy, grouping_overrides=grouping_overrides)
         counts = grouped.value_counts(dropna=False)
         if len(counts) < 2:
             warnings.append(f"Protected attribute `{protected}` has fewer than two groups after cleaning.")
@@ -509,23 +587,29 @@ def validate_pre_audit_data(
     return {"checks": checks, "warnings": warnings}
 
 
-def detect_proxy_variables(df: pd.DataFrame, protected_attributes: list[str], outcome_column: str) -> list[dict[str, Any]]:
+def detect_proxy_variables(
+    df: pd.DataFrame,
+    protected_attributes: list[str],
+    outcome_column: str,
+    policy: dict[str, Any],
+) -> list[dict[str, Any]]:
     protected_set = set(protected_attributes)
     proxy_flags: list[dict[str, Any]] = []
+    thresholds = policy["fairness_thresholds"]["proxy_variable_strength"]
 
     for feature in df.columns:
         if feature == outcome_column or feature in protected_set:
             continue
         for protected in protected_attributes:
             strength, method = association_strength(df[feature], df[protected])
-            if strength >= 0.5:
+            if strength >= thresholds["warning_above"]:
                 proxy_flags.append(
                     {
                         "feature": feature,
                         "protected_attribute": protected,
                         "strength": round(float(strength), 4),
                         "method": method,
-                        "risk": "High" if strength >= 0.7 else "Medium",
+                        "risk": "Critical" if strength >= thresholds["critical_above"] else "High",
                     }
                 )
 
@@ -539,6 +623,10 @@ def train_and_audit_model(
     outcome_column: str,
     model_type: str,
     proxy_flags: list[dict[str, Any]],
+    policy: dict[str, Any],
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
+    control_features: list[str] | None = None,
+    model_selection_priority: float | None = None,
 ) -> dict[str, Any]:
     X = df.drop(columns=[outcome_column])
     y = df[outcome_column].astype(int)
@@ -557,9 +645,28 @@ def train_and_audit_model(
     )
 
     if model_type == "compare_all":
-        selected = compare_and_select_model(X_train, X_test, y_train, y_test, protected_attributes)
+        selected = compare_and_select_model(
+            X_train,
+            X_test,
+            y_train,
+            y_test,
+            protected_attributes,
+            policy,
+            grouping_overrides,
+            model_selection_priority,
+        )
     else:
-        selected = fit_selected_model(X_train, X_test, y_train, y_test, protected_attributes, model_type)
+        selected = fit_selected_model(
+            X_train,
+            X_test,
+            y_train,
+            y_test,
+            protected_attributes,
+            model_type,
+            policy,
+            grouping_overrides,
+            model_selection_priority,
+        )
 
     pipeline = selected["pipeline"]
     selected_model_type = selected["model_key"]
@@ -581,6 +688,9 @@ def train_and_audit_model(
             "strategy": "auditor_pipeline",
             "details": "The auditor tuned hyperparameters locally, trained the selected preprocessing + model pipeline, and evaluated it on the held-out test split.",
         },
+        policy=policy,
+        grouping_overrides=grouping_overrides,
+        selected_control_features=control_features,
     )
     result["selected_model_key"] = selected_model_type
     result["requested_model_type"] = MODEL_LABELS[model_type]
@@ -594,6 +704,8 @@ def train_and_audit_model(
         y_pred,
         protected_attributes,
         X_train,
+        policy,
+        grouping_overrides,
     )
     result["improvement_simulation"] = simulate_feature_drop(
         df,
@@ -602,6 +714,8 @@ def train_and_audit_model(
         selected_model_type,
         proxy_flags,
         selected["tuning"].get("best_params", {}),
+        policy=policy,
+        grouping_overrides=grouping_overrides,
     )
     return result
 
@@ -613,6 +727,9 @@ def fit_selected_model(
     y_test: pd.Series,
     protected_attributes: list[str],
     model_type: str,
+    policy: dict[str, Any],
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
+    model_selection_priority: float | None = None,
 ) -> dict[str, Any]:
     fitted = fit_tuned_model(X_train, y_train, model_type)
     y_pred, _ = normalize_prediction_output(fitted["pipeline"].predict(X_test))
@@ -624,7 +741,10 @@ def fit_selected_model(
         y_pred,
         X_test,
         protected_attributes,
+        policy,
+        grouping_overrides,
         selected=True,
+        model_selection_priority=model_selection_priority,
     )
     return {
         "pipeline": fitted["pipeline"],
@@ -640,6 +760,9 @@ def compare_and_select_model(
     y_train: pd.Series,
     y_test: pd.Series,
     protected_attributes: list[str],
+    policy: dict[str, Any],
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
+    model_selection_priority: float | None = None,
 ) -> dict[str, Any]:
     candidates: list[dict[str, Any]] = []
     selected: dict[str, Any] | None = None
@@ -656,7 +779,10 @@ def compare_and_select_model(
                 y_pred,
                 X_test,
                 protected_attributes,
+                policy,
+                grouping_overrides,
                 selected=False,
+                model_selection_priority=model_selection_priority,
             )
             candidates.append({"row": row, **fitted, "model_key": candidate_key})
             if selected is None or row["audit_selection_score"] > selected["row"]["audit_selection_score"]:
@@ -678,7 +804,10 @@ def compare_and_select_model(
                         "recall": None,
                         "max_demographic_parity_difference": None,
                         "max_equalized_odds_difference": None,
+                        "min_disparate_impact_ratio": None,
                         "audit_selection_score": None,
+                        "fails_policy": True,
+                        "policy_failures": [str(exc)],
                     }
                 }
             )
@@ -783,13 +912,23 @@ def model_comparison_row(
     y_pred: pd.Series,
     X_eval: pd.DataFrame,
     protected_attributes: list[str],
+    policy: dict[str, Any],
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
     *,
     selected: bool,
+    model_selection_priority: float | None = None,
 ) -> dict[str, Any]:
-    fairness = fairness_summary(y_true, y_pred, X_eval, protected_attributes)
+    fairness = fairness_summary(y_true, y_pred, X_eval, protected_attributes, policy, grouping_overrides)
     balanced = float(balanced_accuracy_score(y_true, y_pred))
-    selection_score = balanced - ((fairness["max_demographic_parity_difference"] + fairness["max_equalized_odds_difference"]) / 2)
-    return {
+    selection_score = model_selection_score(
+        balanced_accuracy=balanced,
+        demographic_parity_difference=fairness["max_demographic_parity_difference"],
+        equalized_odds_difference=fairness["max_equalized_odds_difference"],
+        disparate_impact_ratio=fairness["min_disparate_impact_ratio"],
+        policy=policy,
+        priority=model_selection_priority,
+    )
+    row = {
         "model_key": model_type,
         "model": MODEL_LABELS[model_type],
         "selected": selected,
@@ -804,8 +943,13 @@ def model_comparison_row(
         "recall": round(float(recall_score(y_true, y_pred, zero_division=0)), 4),
         "max_demographic_parity_difference": fairness["max_demographic_parity_difference"],
         "max_equalized_odds_difference": fairness["max_equalized_odds_difference"],
+        "min_disparate_impact_ratio": fairness["min_disparate_impact_ratio"],
         "audit_selection_score": round(float(selection_score), 4),
+        "policy_failures": [],
     }
+    row["policy_failures"] = model_policy_failures(row, policy)
+    row["fails_policy"] = bool(row["policy_failures"])
+    return row
 
 
 def fairness_summary(
@@ -813,10 +957,12 @@ def fairness_summary(
     y_pred: pd.Series,
     X_eval: pd.DataFrame,
     protected_attributes: list[str],
+    policy: dict[str, Any],
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, float]:
     metric_rows = []
     for protected in protected_attributes:
-        sensitive = grouped_sensitive_feature(X_eval[protected], protected)
+        sensitive = grouped_sensitive_feature(X_eval[protected], protected, policy=policy, grouping_overrides=grouping_overrides)
         dp = safe_metric(
             lambda: demographic_parity_difference(y_true, y_pred, sensitive_features=sensitive),
             default=0.0,
@@ -825,10 +971,12 @@ def fairness_summary(
             lambda: equalized_odds_difference(y_true, y_pred, sensitive_features=sensitive),
             default=0.0,
         )
-        metric_rows.append((float(dp), float(eo)))
+        group_rows = group_prediction_table(y_true, y_pred, sensitive, policy)
+        metric_rows.append((float(dp), float(eo), min((group["selection_rate"] for group in group_rows), default=1.0)))
     return {
         "max_demographic_parity_difference": round(max((item[0] for item in metric_rows), default=0.0), 4),
         "max_equalized_odds_difference": round(max((item[1] for item in metric_rows), default=0.0), 4),
+        "min_disparate_impact_ratio": round(min((item[2] for item in metric_rows), default=1.0), 4),
     }
 
 
@@ -847,6 +995,8 @@ def build_decision_audit_trace(
     y_pred: pd.Series,
     protected_attributes: list[str],
     baseline_frame: pd.DataFrame,
+    policy: dict[str, Any] | None = None,
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
     *,
     max_records: int = 8,
     max_features: int = 6,
@@ -860,7 +1010,15 @@ def build_decision_audit_trace(
         }
 
     baseline = feature_baseline_values(baseline_frame)
-    risky_indices = select_audit_trace_indices(display_frame, y_true, y_pred, protected_attributes, max_records)
+    risky_indices = select_audit_trace_indices(
+        display_frame,
+        y_true,
+        y_pred,
+        protected_attributes,
+        max_records,
+        policy=policy,
+        grouping_overrides=grouping_overrides,
+    )
     records = []
     warnings_list: list[str] = []
 
@@ -911,7 +1069,15 @@ def build_decision_audit_trace(
                 "prediction": int(y_pred.loc[row_index]) if row_index in y_pred.index else int(pd.Series(y_pred).loc[row_index]),
                 "actual": int(y_true.loc[row_index]) if row_index in y_true.index else int(pd.Series(y_true).loc[row_index]),
                 "decision_score": round(float(original_score), 5),
-                "risk_reason": audit_trace_reason(row_index, display_frame, y_true, y_pred, protected_attributes),
+                "risk_reason": audit_trace_reason(
+                    row_index,
+                    display_frame,
+                    y_true,
+                    y_pred,
+                    protected_attributes,
+                    policy=policy,
+                    grouping_overrides=grouping_overrides,
+                ),
                 "protected_attributes": {
                     protected: json_safe(display_row.get(protected))
                     for protected in protected_attributes
@@ -937,6 +1103,8 @@ def select_audit_trace_indices(
     y_pred: pd.Series,
     protected_attributes: list[str],
     max_records: int,
+    policy: dict[str, Any] | None = None,
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> list[Any]:
     frame = pd.DataFrame({"actual": y_true, "prediction": y_pred}, index=X_eval.index)
     frame["risk_score"] = 0.0
@@ -946,7 +1114,7 @@ def select_audit_trace_indices(
     for protected in protected_attributes:
         if protected not in X_eval.columns:
             continue
-        groups = grouped_sensitive_feature(X_eval[protected], protected)
+        groups = grouped_sensitive_feature(X_eval[protected], protected, policy=policy, grouping_overrides=grouping_overrides)
         rates = pd.Series(y_pred, index=X_eval.index).groupby(groups).mean()
         if rates.empty:
             continue
@@ -963,6 +1131,8 @@ def audit_trace_reason(
     y_true: pd.Series,
     y_pred: pd.Series,
     protected_attributes: list[str],
+    policy: dict[str, Any] | None = None,
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     actual = int(y_true.loc[row_index])
     prediction = int(y_pred.loc[row_index])
@@ -974,7 +1144,7 @@ def audit_trace_reason(
     for protected in protected_attributes:
         if protected not in X_eval.columns:
             continue
-        groups = grouped_sensitive_feature(X_eval[protected], protected)
+        groups = grouped_sensitive_feature(X_eval[protected], protected, policy=policy, grouping_overrides=grouping_overrides)
         group = str(groups.loc[row_index])
         rates = pd.Series(y_pred, index=X_eval.index).groupby(groups).mean()
         if len(rates) and group in set(rates[rates == rates.min()].index.astype(str)):
@@ -1021,6 +1191,9 @@ def audit_uploaded_model(
     model: Any,
     model_name: str,
     proxy_flags: list[dict[str, Any]],
+    policy: dict[str, Any],
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
+    control_features: list[str] | None = None,
 ) -> dict[str, Any]:
     X = df.drop(columns=[outcome_column])
     y = df[outcome_column].astype(int)
@@ -1053,6 +1226,9 @@ def audit_uploaded_model(
         training_samples=None,
         prediction_validation=prediction_validation,
         model_input=model_input,
+        policy=policy,
+        grouping_overrides=grouping_overrides,
+        selected_control_features=control_features,
     )
     result["audit_trace"] = build_decision_audit_trace(
         model,
@@ -1062,11 +1238,75 @@ def audit_uploaded_model(
         y_pred,
         protected_attributes,
         input_frame,
+        policy,
+        grouping_overrides,
     )
     result["improvement_simulation"] = {
         "available": False,
         "reason": "The uploaded model was evaluated as-is. The auditor cannot safely retrain or modify an external model artifact.",
         "recommended_next_step": "Retrain the source model without direct protected attributes and high-risk proxy variables, then upload the new artifact for comparison.",
+    }
+    return result
+
+
+def audit_prediction_csv(
+    df: pd.DataFrame,
+    protected_attributes: list[str],
+    outcome_column: str,
+    predictions: pd.Series,
+    prediction_metadata: dict[str, Any],
+    proxy_flags: list[dict[str, Any]],
+    policy: dict[str, Any],
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
+    control_features: list[str] | None = None,
+) -> dict[str, Any]:
+    X = df.drop(columns=[outcome_column])
+    y = df[outcome_column].astype(int)
+    y_pred, prediction_validation = normalize_prediction_output(predictions)
+    y_pred.index = y.index
+    prediction_validation["warnings"].append(
+        "Prediction-only CSV mode does not inspect or execute the model artifact. Feature-level explanations and mitigation simulations are limited."
+    )
+
+    result = build_post_audit_result(
+        X,
+        y,
+        y_pred,
+        protected_attributes,
+        proxy_flags,
+        feature_importance=[],
+        model_type="Prediction CSV audit",
+        mode="prediction_csv",
+        training_samples=None,
+        prediction_validation=prediction_validation,
+        model_input={
+            "strategy": "prediction_csv",
+            "details": (
+                f"Audited externally generated predictions from `{prediction_metadata.get('filename', 'predictions.csv')}` "
+                f"using column `{prediction_metadata.get('selected_column', 'prediction')}`."
+            ),
+            "warnings": prediction_metadata.get("warnings", []),
+        },
+        policy=policy,
+        grouping_overrides=grouping_overrides,
+        selected_control_features=control_features,
+    )
+    result["audit_trace"] = {
+        "method": "prediction_only_review",
+        "method_description": "Prediction CSV audits can validate fairness outcomes but cannot attribute row-level feature contributions because the model artifact was not executed in the auditor.",
+        "explainability_available": False,
+        "confidence": "Low-Medium",
+        "limitations": [
+            "Predictions were audited without model internals.",
+            "No local feature contribution trace is available in prediction-only mode.",
+        ],
+        "records": [],
+        "reason": "Prediction CSV mode validates outputs safely without loading a model artifact.",
+    }
+    result["improvement_simulation"] = {
+        "available": False,
+        "reason": "Prediction-only mode cannot retrain or simulate mitigations because the original model artifact was not provided.",
+        "recommended_next_step": "Re-run with a safe supported model or retrain externally and compare a second prediction CSV after remediation.",
     }
     return result
 
@@ -1084,6 +1324,9 @@ def build_post_audit_result(
     training_samples: int | None,
     prediction_validation: dict[str, Any],
     model_input: dict[str, Any],
+    policy: dict[str, Any],
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
+    selected_control_features: list[str] | None = None,
 ) -> dict[str, Any]:
     performance = {
         "training_samples": training_samples,
@@ -1095,7 +1338,7 @@ def build_post_audit_result(
 
     bias_metrics = []
     for protected in protected_attributes:
-        sensitive = grouped_sensitive_feature(X_eval[protected], protected)
+        sensitive = grouped_sensitive_feature(X_eval[protected], protected, policy=policy, grouping_overrides=grouping_overrides)
         dp = safe_metric(
             lambda: demographic_parity_difference(y_true, y_pred, sensitive_features=sensitive),
             default=0.0,
@@ -1105,21 +1348,25 @@ def build_post_audit_result(
             default=0.0,
         )
 
-        group_table = group_prediction_table(y_true, y_pred, sensitive)
+        group_table = group_prediction_table(y_true, y_pred, sensitive, policy)
+        disparate_impact_ratio = (
+            round(
+                min((group["selection_rate"] for group in group_table), default=0.0)
+                / max((group["selection_rate"] for group in group_table), default=1.0),
+                4,
+            )
+            if group_table and max((group["selection_rate"] for group in group_table), default=0.0) > 0
+            else 0.0
+        )
         bias_metrics.append(
             {
                 "protected_attribute": protected,
                 "demographic_parity_difference": round(float(dp), 4),
                 "equalized_odds_difference": round(float(eo), 4),
-                "status": bias_status(max(float(dp), float(eo))),
+                "status": gap_status(max(float(dp), float(eo)), policy, "equalized_odds_difference"),
                 "groups": group_table,
-                "disparate_impact_ratio": round(
-                    min((group["selection_rate"] for group in group_table), default=0.0)
-                    / max((group["selection_rate"] for group in group_table), default=1.0),
-                    4,
-                )
-                if group_table and max((group["selection_rate"] for group in group_table), default=0.0) > 0
-                else 0.0,
+                "disparate_impact_ratio": disparate_impact_ratio,
+                "disparate_impact_status": ratio_status(disparate_impact_ratio, policy, "disparate_impact_ratio"),
             }
         )
 
@@ -1130,10 +1377,27 @@ def build_post_audit_result(
         "prediction_validation": prediction_validation,
         "performance": performance,
         "bias_metrics": bias_metrics,
-        "conditional_fairness": build_conditional_fairness(X_eval, y_pred, protected_attributes, feature_importance),
-        "intersectional_bias": build_intersectional_analysis(X_eval, y_true, y_pred, protected_attributes),
+        "conditional_fairness": build_conditional_fairness(
+            X_eval,
+            y_pred,
+            protected_attributes,
+            feature_importance,
+            proxy_flags,
+            policy,
+            grouping_overrides,
+            selected_control_features,
+        ),
+        "intersectional_bias": build_intersectional_analysis(
+            X_eval,
+            y_true,
+            y_pred,
+            protected_attributes,
+            policy,
+            grouping_overrides,
+        ),
         "feature_importance": feature_importance[:10],
         "bias_sources": build_bias_sources(feature_importance, proxy_flags),
+        "limitations": build_limitations(mode, feature_importance),
     }
 
 
@@ -1162,26 +1426,38 @@ def build_conditional_fairness(
     y_pred: pd.Series,
     protected_attributes: list[str],
     feature_importance: list[dict[str, Any]],
+    proxy_flags: list[dict[str, Any]],
+    policy: dict[str, Any],
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
+    selected_control_features: list[str] | None = None,
 ) -> dict[str, Any]:
-    control_features = select_control_features(X_eval, protected_attributes, feature_importance)
+    recommendations = rank_control_features(X_eval, y_pred, protected_attributes, feature_importance, proxy_flags)
+    control_features = select_control_features(
+        X_eval,
+        protected_attributes,
+        feature_importance,
+        recommendations,
+        selected_control_features,
+    )
     if not control_features:
         return {
             "available": False,
             "reason": "No non-protected control features were available for same-background cohort analysis.",
             "control_features": [],
             "results": [],
+            "recommendations": recommendations,
         }
 
     cohort_frame = pd.DataFrame(index=X_eval.index)
     for feature in control_features:
-        cohort_frame[feature] = cohort_values(X_eval[feature], feature)
+        cohort_frame[feature] = cohort_values(X_eval[feature], feature, policy, grouping_overrides)
     cohort_key = cohort_frame.astype(str).agg(" | ".join, axis=1)
 
     results = []
     for protected in protected_attributes:
         if protected not in X_eval.columns:
             continue
-        sensitive = grouped_sensitive_feature(X_eval[protected], protected).astype(str)
+        sensitive = grouped_sensitive_feature(X_eval[protected], protected, policy=policy, grouping_overrides=grouping_overrides).astype(str)
         frame = pd.DataFrame(
             {
                 "prediction": pd.Series(y_pred, index=X_eval.index).astype(int),
@@ -1214,7 +1490,7 @@ def build_conditional_fairness(
                     "lowest_group": str(rates.index[-1]),
                     "lowest_selection_rate": round(float(rates.iloc[-1]), 4),
                     "selection_gap": round(gap, 4),
-                    "status": bias_status(gap),
+                    "status": gap_status(gap, policy, "demographic_parity_difference"),
                 }
             )
 
@@ -1225,7 +1501,7 @@ def build_conditional_fairness(
                 "control_features": control_features,
                 "cohorts_analyzed": len(cohort_rows),
                 "weighted_selection_gap": round(safe_ratio(weighted_gap_sum, weighted_count, default=0.0), 4),
-                "status": bias_status(safe_ratio(weighted_gap_sum, weighted_count, default=0.0)),
+                "status": gap_status(safe_ratio(weighted_gap_sum, weighted_count, default=0.0), policy, "demographic_parity_difference"),
                 "worst_cohorts": cohort_rows[:5],
             }
         )
@@ -1237,21 +1513,70 @@ def build_conditional_fairness(
         "minimum_group_size": 5,
         "minimum_cohort_size": 20,
         "results": results,
+        "recommendations": recommendations,
     }
+
+
+def rank_control_features(
+    X_eval: pd.DataFrame,
+    y_pred: pd.Series,
+    protected_attributes: list[str],
+    feature_importance: list[dict[str, Any]],
+    proxy_flags: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    protected_set = set(protected_attributes)
+    importance_lookup = {item["feature"]: float(item.get("normalized_importance", 0.0)) for item in feature_importance}
+    proxy_lookup: dict[str, float] = {}
+    for item in proxy_flags:
+        proxy_lookup[item["feature"]] = max(proxy_lookup.get(item["feature"], 0.0), float(item.get("strength", 0.0)))
+
+    rows = []
+    target = pd.Series(y_pred).astype(int)
+    for feature in X_eval.columns:
+        if feature in protected_set or X_eval[feature].nunique(dropna=True) <= 1:
+            continue
+        predictive_strength, _ = association_strength(X_eval[feature], target)
+        if feature in importance_lookup:
+            predictive_strength = max(predictive_strength, importance_lookup[feature])
+        proxy_risk = proxy_lookup.get(feature, 0.0)
+        missingness = float(X_eval[feature].isna().mean())
+        suitability = round(max(0.0, predictive_strength - proxy_risk - missingness), 4)
+        rows.append(
+            {
+                "feature": feature,
+                "predictive_strength": round(float(predictive_strength), 4),
+                "proxy_risk": round(float(proxy_risk), 4),
+                "missingness": round(float(missingness), 4),
+                "suitability": suitability,
+                "recommended": suitability > 0.15 and proxy_risk < 0.5,
+            }
+        )
+    rows.sort(key=lambda item: item["suitability"], reverse=True)
+    return rows[:12]
 
 
 def select_control_features(
     X_eval: pd.DataFrame,
     protected_attributes: list[str],
     feature_importance: list[dict[str, Any]],
+    recommendations: list[dict[str, Any]] | None = None,
+    selected_control_features: list[str] | None = None,
     max_features: int = 3,
 ) -> list[str]:
     protected_set = set(protected_attributes)
-    ordered = [
-        item["feature"]
-        for item in feature_importance
-        if item["feature"] in X_eval.columns and item["feature"] not in protected_set
-    ]
+    requested = [feature for feature in (selected_control_features or []) if feature in X_eval.columns and feature not in protected_set]
+    if requested:
+        return requested[:max_features]
+
+    recommendations = recommendations or []
+    if recommendations:
+        ordered = [item["feature"] for item in recommendations]
+    else:
+        ordered = [
+            item["feature"]
+            for item in feature_importance
+            if item["feature"] in X_eval.columns and item["feature"] not in protected_set
+        ]
     if not ordered:
         ordered = [column for column in X_eval.columns if column not in protected_set]
     controls = []
@@ -1264,13 +1589,18 @@ def select_control_features(
     return controls
 
 
-def cohort_values(series: pd.Series, column_name: str) -> pd.Series:
+def cohort_values(
+    series: pd.Series,
+    column_name: str,
+    policy: dict[str, Any],
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
+) -> pd.Series:
     numeric, is_numeric = coerce_numeric_if_reasonable(series)
     if is_numeric and numeric.nunique(dropna=True) > 5:
         try:
             return pd.qcut(numeric, q=min(4, numeric.nunique()), duplicates="drop").astype(str).replace("nan", "Unknown")
         except ValueError:
-            return grouped_sensitive_feature(series, column_name)
+            return grouped_sensitive_feature(series, column_name, policy=policy, grouping_overrides=grouping_overrides)
     values = series.fillna("Unknown").astype(str)
     if values.nunique(dropna=True) > 12:
         top_values = set(values.value_counts().head(10).index.tolist())
@@ -1283,6 +1613,8 @@ def build_intersectional_analysis(
     y_true: pd.Series,
     y_pred: pd.Series,
     protected_attributes: list[str],
+    policy: dict[str, Any],
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     available_attributes = [protected for protected in protected_attributes if protected in X_eval.columns]
     if len(available_attributes) < 2:
@@ -1292,14 +1624,17 @@ def build_intersectional_analysis(
             "groups": [],
         }
 
-    grouped_parts = [grouped_sensitive_feature(X_eval[protected], protected).astype(str) for protected in available_attributes]
+    grouped_parts = [
+        grouped_sensitive_feature(X_eval[protected], protected, policy=policy, grouping_overrides=grouping_overrides).astype(str)
+        for protected in available_attributes
+    ]
     intersection = pd.concat(grouped_parts, axis=1)
     intersection.columns = available_attributes
     intersection_key = intersection.apply(
         lambda row: " | ".join(f"{column}={row[column]}" for column in available_attributes),
         axis=1,
     )
-    groups = group_prediction_table(y_true, np.asarray(y_pred), intersection_key)
+    groups = group_prediction_table(y_true, np.asarray(y_pred), intersection_key, policy)
     for group in groups:
         group["small_group_warning"] = group["count"] < 20
     groups.sort(key=lambda item: (item["selection_rate"], -item["count"]))
@@ -1319,7 +1654,10 @@ def simulate_feature_drop(
     model_type: str,
     proxy_flags: list[dict[str, Any]],
     model_params: dict[str, Any] | None = None,
+    policy: dict[str, Any] | None = None,
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    policy = policy or load_policy(DEFAULT_POLICY_ID)
     drop_features = sorted(
         {
             *protected_attributes,
@@ -1357,7 +1695,12 @@ def simulate_feature_drop(
         y_pred.index = X_test.index
         metric_rows = []
         for protected in protected_attributes:
-            sensitive = grouped_sensitive_feature(df.loc[X_test.index, protected], protected)
+            sensitive = grouped_sensitive_feature(
+                df.loc[X_test.index, protected],
+                protected,
+                policy=policy,
+                grouping_overrides=grouping_overrides,
+            )
             dp = safe_metric(
                 lambda: demographic_parity_difference(y_test, y_pred, sensitive_features=sensitive),
                 default=0.0,
@@ -1619,7 +1962,13 @@ def build_model_pipeline(X: pd.DataFrame, model_type: str, model_params: dict[st
     return pipeline
 
 
-def group_prediction_table(y_true: pd.Series, y_pred: np.ndarray, sensitive: pd.Series) -> list[dict[str, Any]]:
+def group_prediction_table(
+    y_true: pd.Series,
+    y_pred: np.ndarray,
+    sensitive: pd.Series,
+    policy: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    policy = policy or load_policy(DEFAULT_POLICY_ID)
     frame = pd.DataFrame({"y_true": np.asarray(y_true), "y_pred": np.asarray(y_pred), "group": sensitive.astype(str).values})
     rows = []
     for group, group_df in frame.groupby("group"):
@@ -1641,7 +1990,7 @@ def group_prediction_table(y_true: pd.Series, y_pred: np.ndarray, sensitive: pd.
     max_rate = max((item["selection_rate"] for item in rows), default=0.0)
     for item in rows:
         item["ratio_to_highest"] = round(safe_ratio(item["selection_rate"], max_rate, default=1.0), 4)
-        item["status"] = status_from_threshold(item["ratio_to_highest"], warning=0.8, danger=0.5, higher_is_better=True)
+        item["status"] = ratio_status(item["ratio_to_highest"], policy, "representation_ratio")
     return rows
 
 
@@ -1696,19 +2045,14 @@ def transformed_to_original_feature(transformed_name: str, original_columns: lis
     return name
 
 
-def grouped_sensitive_feature(series: pd.Series, column_name: str) -> pd.Series:
-    numeric, is_numeric = coerce_numeric_if_reasonable(series)
-    if is_numeric and numeric.nunique(dropna=True) > 8:
-        lower_name = column_name.lower()
-        if "age" in lower_name:
-            bins = [-math.inf, 24, 44, 64, math.inf]
-            labels = ["Under 25", "25-44", "45-64", "65+"]
-            return pd.cut(numeric, bins=bins, labels=labels).astype(str).replace("nan", "Unknown")
-        try:
-            return pd.qcut(numeric, q=min(4, numeric.nunique()), duplicates="drop").astype(str).replace("nan", "Unknown")
-        except ValueError:
-            return numeric.fillna(numeric.median()).astype(str)
-    return series.fillna("Unknown").astype(str)
+def grouped_sensitive_feature(
+    series: pd.Series,
+    column_name: str,
+    policy: dict[str, Any] | None = None,
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
+) -> pd.Series:
+    policy = policy or load_policy(DEFAULT_POLICY_ID)
+    return group_series(series, column_name, policy, grouping_overrides)
 
 
 def coerce_numeric_if_reasonable(series: pd.Series) -> tuple[pd.Series, bool]:
@@ -1773,49 +2117,45 @@ def cramers_v(left: pd.Series, right: pd.Series) -> float:
     return float(math.sqrt(phi2 / denominator))
 
 
-def calculate_severity(dp_score: float, eo_score: float, proxy_count: int, representation_ratio: float) -> str:
-    score = 0
-    if dp_score > 0.2:
-        score += 3
-    elif dp_score > 0.1:
-        score += 2
-    else:
-        score += 1
+def calculate_severity(
+    dp_score: float,
+    eo_score: float,
+    proxy_count: int,
+    representation_ratio: float,
+    policy: dict[str, Any] | None = None,
+) -> str:
+    policy = policy or load_policy(DEFAULT_POLICY_ID)
+    proxy_thresholds = policy["fairness_thresholds"]["proxy_variable_strength"]
+    proxy_strength = proxy_thresholds["warning_above"] + (
+        min(proxy_count, 3) / 3 * (proxy_thresholds["critical_above"] - proxy_thresholds["warning_above"])
+    )
+    governance = build_governance_assessment(
+        {
+            "proxy_flags": [{"strength": proxy_strength}] * proxy_count,
+            "representation": [{"minimum_representation_ratio": representation_ratio, "groups": []}],
+        },
+        {
+            "bias_metrics": [
+                {
+                    "demographic_parity_difference": dp_score,
+                    "equalized_odds_difference": eo_score,
+                    "disparate_impact_ratio": representation_ratio,
+                }
+            ],
+            "conditional_fairness": {"results": []},
+        },
+        policy,
+    )
+    return governance["severity"]
 
-    if eo_score > 0.2:
-        score += 3
-    elif eo_score > 0.1:
-        score += 2
-    else:
-        score += 1
 
-    score += min(proxy_count, 3)
-
-    if representation_ratio < 0.5:
-        score += 2
-    elif representation_ratio < 0.8:
-        score += 1
-
-    if score >= 9:
-        return "Critical"
-    if score >= 6:
-        return "High"
-    if score >= 4:
-        return "Medium"
-    return "Low"
-
-
-def calculate_pre_audit_severity(proxy_count: int, representation_ratio: float) -> str:
-    score = min(proxy_count, 3)
-    if representation_ratio < 0.5:
-        score += 3
-    elif representation_ratio < 0.8:
-        score += 2
-    if score >= 5:
-        return "High"
-    if score >= 3:
-        return "Medium"
-    return "Low"
+def calculate_pre_audit_severity(
+    proxy_count: int,
+    representation_ratio: float,
+    policy: dict[str, Any] | None = None,
+) -> str:
+    policy = policy or load_policy(DEFAULT_POLICY_ID)
+    return calculate_severity(0.0, 0.0, proxy_count, representation_ratio, policy=policy)
 
 
 def build_traceability_metadata(
@@ -1824,6 +2164,10 @@ def build_traceability_metadata(
     outcome_column: str,
     audit_mode: str,
     model_results: dict[str, Any],
+    policy: dict[str, Any],
+    template_id: str,
+    control_features: list[str] | None = None,
+    grouping_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     model_identity = {
         "model_type": model_results.get("model_type"),
@@ -1836,7 +2180,7 @@ def build_traceability_metadata(
     return {
         "run_id": uuid4().hex,
         "created_at_utc": datetime.now(UTC).isoformat(),
-        "auditor_version": "0.1.0",
+        "auditor_version": "0.2.0",
         "audit_mode": AUDIT_MODE_LABELS.get(audit_mode, audit_mode),
         "dataset_hash_sha256": dataset_hash(df),
         "dataset_rows": int(len(df)),
@@ -1846,10 +2190,17 @@ def build_traceability_metadata(
         "model_fingerprint_sha256": stable_hash(model_identity),
         "model_identity": model_identity,
         "policy": {
-            "severity_logic": "fixed_mvp_thresholds",
-            "representation_rule": "four_fifths_rule_0.8",
-            "conditional_fairness": "stratified same-background cohorts using up to three non-protected control features",
-            "decision_explanation": "local baseline perturbation per feature",
+            "policy_id": policy["policy_id"],
+            "policy_version": policy["version"],
+            "policy_name": policy["name"],
+            "severity_weights": policy.get("severity_weights", {}),
+            "fairness_thresholds": policy.get("fairness_thresholds", {}),
+            "deployment_decision_thresholds": policy.get("deployment_decision_thresholds", {}),
+            "grouping_rules": policy.get("grouping_rules", {}),
+            "model_selection": policy.get("model_selection", {}),
+            "report_template": template_id,
+            "requested_control_features": control_features or [],
+            "grouping_overrides": grouping_overrides or {},
         },
     }
 
@@ -1863,8 +2214,9 @@ def stable_hash(value: Any) -> str:
     return sha256(str(json_safe(value)).encode("utf-8")).hexdigest()
 
 
-def generate_explanation_report(summary: dict[str, Any]) -> dict[str, str]:
+def generate_explanation_report(summary: dict[str, Any], template_id: str = "full_report") -> dict[str, Any]:
     prompt = build_report_prompt(summary)
+    sections = build_local_report_sections(summary, template_id)
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if api_key:
         try:
@@ -1876,15 +2228,31 @@ def generate_explanation_report(summary: dict[str, Any]) -> dict[str, str]:
             response = model.generate_content(prompt)
             text = response.text.strip()
             if text:
-                return {"source": f"Gemini ({model_name})", "text": text}
+                sections[1]["content"] = text
+                return {
+                    "source": f"Gemini ({model_name})",
+                    "template_id": template_id,
+                    "template_title": report_template(template_id)["title"],
+                    "sections": sections,
+                    "text": flatten_report_sections(sections),
+                    "limitations": summary["model"].get("limitations", []),
+                }
         except Exception as exc:
             return {
                 "source": "Local deterministic report (Gemini unavailable)",
-                "text": build_local_report(summary) + f"\n\nGemini enhancement was unavailable: {exc}",
+                "template_id": template_id,
+                "template_title": report_template(template_id)["title"],
+                "sections": sections,
+                "text": flatten_report_sections(sections) + f"\n\nGemini enhancement was unavailable: {exc}",
+                "limitations": summary["model"].get("limitations", []),
             }
     return {
         "source": "Local deterministic report",
-        "text": build_local_report(summary),
+        "template_id": template_id,
+        "template_title": report_template(template_id)["title"],
+        "sections": sections,
+        "text": flatten_report_sections(sections),
+        "limitations": summary["model"].get("limitations", []),
     }
 
 
@@ -1908,16 +2276,18 @@ def build_report_prompt(summary: dict[str, Any]) -> str:
         "bias_sources": summary["model"]["bias_sources"],
         "improvement_simulation": summary["model"].get("improvement_simulation", {}),
         "severity": summary["severity"],
+        "governance": summary.get("governance", {}),
+        "limitations": summary["model"].get("limitations", []),
     }
     return textwrap.dedent(
         f"""
         You are an AI ethics expert. Based on this bias audit, provide:
-        1. A plain English summary of what bias was found and how serious it is.
-        2. The real-world impact this bias would have on affected groups.
+        1. An executive summary of what bias was found and how serious it is.
+        2. A deployment recommendation: Safe to deploy / Needs review / Do not deploy, with reasons.
         3. Why the bias may be happening, based on proxy variables, feature importance, and group outcomes.
         4. Three specific, actionable recommendations to reduce the bias.
         5. A short mitigation simulation interpretation if simulation data is present.
-        6. An overall bias severity rating: Low / Medium / High / Critical.
+        6. A limitations paragraph that prevents overclaiming.
 
         Write for a non-technical manager, not a data scientist.
         Avoid claiming the model has been fixed. Recommendations should be concrete, cautious, and implementation-ready.
@@ -1928,7 +2298,11 @@ def build_report_prompt(summary: dict[str, Any]) -> str:
     ).strip()
 
 
-def build_local_report(summary: dict[str, Any]) -> str:
+def build_local_report(summary: dict[str, Any], template_id: str = "full_report") -> str:
+    return flatten_report_sections(build_local_report_sections(summary, template_id))
+
+
+def build_local_report_sections(summary: dict[str, Any], template_id: str = "full_report") -> list[dict[str, str]]:
     severity = summary["severity"]
     dataset = summary["dataset"]
     bias_metrics = summary["model"]["bias_metrics"]
@@ -1937,6 +2311,8 @@ def build_local_report(summary: dict[str, Any]) -> str:
     conditional = summary["model"].get("conditional_fairness", {})
     intersectional = summary["model"].get("intersectional_bias", {})
     audit_trace = summary["model"].get("audit_trace", {})
+    governance = summary.get("governance", {})
+    report_mode = report_template(template_id)
 
     concerning = [item for item in bias_metrics if item["status"] in {"High", "Critical"}]
     if concerning:
@@ -1983,18 +2359,79 @@ def build_local_report(summary: dict[str, Any]) -> str:
             f"Row {first_record['row_id']} was flagged as {first_record['risk_reason']}; the largest local contributors were {relied_on}."
         )
 
-    return "\n\n".join(
-        [
-            first_line,
-            f"The selected model was {summary['model'].get('model_type')} for `{dataset['outcome_column']}` using {dataset['rows']} cleaned rows. {proxy_count} proxy-risk feature links were detected.",
-            source_line,
-            conditional_line,
-            intersection_line,
-            trace_line,
-            "Recommended actions:\n" + "\n".join(f"{index}. {item}" for index, item in enumerate(recommendations, start=1)),
-            f"Overall severity rating: {severity}.",
-        ]
+    scope_text = (
+        "Supported scope: tabular binary classification, uploaded prediction outputs, and sklearn-compatible local models. "
+        "Not yet supported: regression, ranking systems, multiclass fairness, LLM audits, or image-model audits."
     )
+    policy_text = (
+        f"Policy applied: {summary['traceability']['policy']['policy_name']} "
+        f"({summary['traceability']['policy']['policy_id']} v{summary['traceability']['policy']['policy_version']}). "
+        f"Deployment recommendation: {governance.get('deployment_decision', 'Needs review')} "
+        f"with risk score {governance.get('risk_score', 'n/a')}."
+    )
+    driver_lines = governance.get("top_risk_drivers", []) or ["No major weighted risk drivers were detected."]
+    limitations_text = "\n".join(f"- {item}" for item in summary["model"].get("limitations", []))
+
+    sections = [
+        {"title": "Template", "content": f"Report template: {report_mode['title']}. {report_mode['description']}"},
+        {"title": "Executive Summary", "content": first_line},
+        {"title": "Deployment Recommendation", "content": policy_text},
+        {
+            "title": "Key Findings",
+            "content": "\n".join(
+                [
+                    f"The selected model was {summary['model'].get('model_type')} for `{dataset['outcome_column']}` using {dataset['rows']} cleaned rows.",
+                    f"{proxy_count} proxy-risk feature links were detected.",
+                    source_line,
+                    conditional_line,
+                    intersection_line,
+                    trace_line,
+                ]
+            ),
+        },
+        {"title": "Top Risk Drivers", "content": "\n".join(f"{index}. {item}" for index, item in enumerate(driver_lines, start=1))},
+        {
+            "title": "Recommended Actions",
+            "content": "\n".join(f"{index}. {item}" for index, item in enumerate(recommendations, start=1)),
+        },
+        {"title": "Supported Scope", "content": scope_text},
+        {"title": "Limitations", "content": limitations_text},
+    ]
+
+    if template_id == "executive_summary":
+        return sections[:4] + [sections[4], sections[7]]
+    if template_id == "technical_audit":
+        return [sections[1], sections[2], sections[3], sections[4], sections[7]]
+    if template_id == "compliance_review":
+        return [sections[0], sections[2], sections[4], sections[5], sections[7]]
+    if template_id == "model_card":
+        return [
+            {"title": "Model Card", "content": f"Model: {summary['model'].get('model_type')}\nOutcome: {dataset['outcome_column']}\nRows audited: {dataset['rows']}"},
+            sections[2],
+            sections[3],
+            sections[6],
+            sections[7],
+        ]
+    return sections
+
+
+def flatten_report_sections(sections: list[dict[str, str]]) -> str:
+    return "\n\n".join(f"{section['title']}\n{section['content']}".strip() for section in sections)
+
+
+def build_limitations(mode: str, feature_importance: list[dict[str, Any]]) -> list[str]:
+    limitations = [
+        "This auditor currently targets tabular binary classification workflows only.",
+        "Fairness metrics quantify correlations in outcomes and errors; they do not prove causality or legal compliance by themselves.",
+        "Small protected groups can make fairness estimates unstable.",
+    ]
+    if not feature_importance:
+        limitations.append("This run did not have reliable model-internal feature importance, so root-cause analysis is limited.")
+    if mode == "uploaded_model":
+        limitations.append("Uploaded-model mode depends on the artifact's predict(...) behavior and does not guarantee preprocessing parity with the original training environment.")
+    if mode == "prediction_csv":
+        limitations.append("Prediction-only mode cannot inspect model internals, feature contributions, or mitigation simulations.")
+    return limitations
 
 
 def safe_metric(func: Any, default: float) -> float:

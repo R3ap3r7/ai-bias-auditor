@@ -9,7 +9,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 
-def build_pdf_report(result: dict[str, Any]) -> bytes:
+def build_pdf_report(result: dict[str, Any], template_id: str | None = None) -> bytes:
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=48, leftMargin=48, topMargin=48, bottomMargin=48)
     styles = getSampleStyleSheet()
@@ -23,6 +23,8 @@ def build_pdf_report(result: dict[str, Any]) -> bytes:
     story.append(Paragraph("AI Bias Auditor Report", styles["Title"]))
     story.append(Spacer(1, 12))
     story.append(Paragraph(f"Severity: {result['severity']}", styles["Heading2"]))
+    if result.get("deployment_decision"):
+        story.append(Paragraph(f"Deployment decision: {result['deployment_decision']}", styles["Heading2"]))
     story.append(
         Paragraph(
             f"Dataset: {dataset['rows']} rows, {dataset['columns']} columns. Outcome: {dataset['outcome_column']}. Model: {dataset['model_type']}.",
@@ -35,7 +37,26 @@ def build_pdf_report(result: dict[str, Any]) -> bytes:
         story.append(Paragraph(f"Run ID: {traceability.get('run_id', '')}", styles["BodyText"]))
         story.append(Paragraph(f"Dataset hash: {traceability.get('dataset_hash_sha256', '')}", styles["BodyText"]))
         story.append(Paragraph(f"Model fingerprint: {traceability.get('model_fingerprint_sha256', '')}", styles["BodyText"]))
+        policy = traceability.get("policy", {})
+        if policy:
+            story.append(
+                Paragraph(
+                    f"Policy: {policy.get('policy_name', '')} ({policy.get('policy_id', '')} v{policy.get('policy_version', '')})",
+                    styles["BodyText"],
+                )
+            )
     story.append(Spacer(1, 12))
+
+    governance = result.get("governance", {})
+    if governance:
+        story.append(Paragraph("Governance Decision", styles["Heading2"]))
+        governance_rows = [["Field", "Value"]]
+        governance_rows.append(["Risk score", governance.get("risk_score", "")])
+        governance_rows.append(["Deployment decision", governance.get("deployment_decision", "")])
+        for driver in governance.get("top_risk_drivers", [])[:5]:
+            governance_rows.append(["Risk driver", driver])
+        story.append(simple_table(governance_rows))
+        story.append(Spacer(1, 12))
 
     performance = model["performance"]
     story.append(Paragraph("Model Performance", styles["Heading2"]))
@@ -152,9 +173,17 @@ def build_pdf_report(result: dict[str, Any]) -> bytes:
     story.append(Spacer(1, 12))
 
     story.append(Paragraph("Explanation Report", styles["Heading2"]))
-    for paragraph in result["report"]["text"].split("\n\n"):
-        story.append(Paragraph(paragraph.replace("\n", "<br/>"), styles["BodyText"]))
-        story.append(Spacer(1, 8))
+    report = result.get("report", {})
+    sections = report.get("sections") or []
+    if sections:
+        for section in sections:
+            story.append(Paragraph(str(section.get("title", "")), styles["Heading3"]))
+            story.append(Paragraph(str(section.get("content", "")).replace("\n", "<br/>"), styles["BodyText"]))
+            story.append(Spacer(1, 8))
+    else:
+        for paragraph in report.get("text", "").split("\n\n"):
+            story.append(Paragraph(paragraph.replace("\n", "<br/>"), styles["BodyText"]))
+            story.append(Spacer(1, 8))
 
     doc.build(story)
     return buffer.getvalue()

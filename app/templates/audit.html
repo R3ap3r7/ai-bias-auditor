@@ -151,8 +151,30 @@
             <select id="auditModeSelect" class="select" aria-label="Select audit mode">
               <option value="train">Train a model in the auditor</option>
               <option value="uploaded_model">Use uploaded model</option>
+              <option value="prediction_csv">Use prediction CSV</option>
             </select>
           </div>
+        </div>
+
+        <div class="grid-3" style="margin-bottom:1.75rem;">
+          <div>
+            <label for="policySelect">Governance Policy</label>
+            <select id="policySelect" class="select" aria-label="Select governance policy"></select>
+          </div>
+          <div>
+            <label for="reportTemplateSelect">Report Template</label>
+            <select id="reportTemplateSelect" class="select" aria-label="Select report template"></select>
+          </div>
+          <div>
+            <label for="modelPriority">Model Selection Priority</label>
+            <input id="modelPriority" type="range" min="0" max="100" value="55" aria-label="Model selection priority" />
+            <p id="modelPriorityLabel" style="font-size:0.75rem;color:#a1a1aa;margin-top:0.35rem;">Balanced: 55% accuracy / 45% fairness</p>
+          </div>
+        </div>
+
+        <div style="margin-bottom:1.75rem;">
+          <label>Same-background Control Variables</label>
+          <div id="controlFeatureOptions" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0.5rem;margin-top:0.5rem;"></div>
         </div>
 
         <!-- Model upload (toggled by app.js) -->
@@ -168,6 +190,20 @@
             <button type="submit" id="modelUploadBtn">Upload Model</button>
           </div>
           <p id="modelStatus" aria-live="polite"></p>
+        </form>
+
+        <form id="predictionUploadForm" class="hidden" style="margin-bottom:1.75rem;">
+          <div style="display:flex;align-items:flex-end;gap:1rem;flex-wrap:wrap;">
+            <div style="flex:1;min-width:250px;">
+              <label for="predictionFile" style="display:block;font-size:0.825rem;color:#a1a1aa;margin-bottom:0.5rem;">
+                Upload Prediction CSV
+              </label>
+              <input id="predictionFile" name="file" type="file" accept=".csv,text/csv"
+                     class="input" aria-label="Choose prediction CSV" />
+            </div>
+            <button type="submit" id="predictionUploadBtn">Upload Predictions</button>
+          </div>
+          <p id="predictionStatus" aria-live="polite"></p>
         </form>
 
         <!-- Action buttons -->
@@ -294,6 +330,10 @@
       <div class="audit-tab-pane" id="pane-governance">
         <div class="a-result-card" id="governanceSection">
           <div class="a-section-h2">Governance Trace</div>
+          <div class="a-section-h3">Governance Decision</div>
+          <div id="governanceDecision" class="table-container" style="margin-bottom:1.25rem;"></div>
+          <div class="a-section-h3">Grouping Preview</div>
+          <div id="groupingPreview" class="table-container" style="margin-bottom:1.25rem;"></div>
           <div class="a-section-h3">Run Traceability</div>
           <div id="traceabilityTable" class="table-container" style="margin-bottom:1.25rem;"></div>
           <div class="a-section-h3">Same-Background Fairness</div>

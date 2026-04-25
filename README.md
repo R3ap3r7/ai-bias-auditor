@@ -20,7 +20,7 @@ Algorithmic bias is not a hypothetical risk — it is a documented, recurring ha
 
 **AI Bias Auditor** is a local, privacy-first fairness auditing tool that gives teams the ability to measure, understand, and document bias in their ML models — before a single prediction reaches a real person. Upload a CSV dataset and a trained model (or let AI Bias Auditor train one), mark your protected attributes, and receive a full fairness report covering demographic parity, equalized odds, disparate impact, proxy variable detection, intersectional group analysis, and row-level decision traces — all within minutes.
 
-Unlike cloud-based auditing platforms that require you to upload sensitive data to third-party servers, AI Bias Auditor runs entirely on your machine. Every computation — model training, fairness metric calculation, report generation — happens locally. No data ever leaves your environment. When optional Gemini AI integration is enabled, only a compact, anonymised audit summary (not raw data) is sent to generate a plain-English narrative; the full dataset never touches the network.
+Raw datasets and uploaded model artifacts are processed by the audit engine and are not persisted by default. Optional Gemini reporting sends a compact audit summary, not raw CSV rows, to generate stakeholder language. Optional Firestore history stores report artifacts and aggregate governance metadata. For fully offline use, disable Gemini, leave Firestore unconfigured, and self-host frontend assets such as fonts and Chart.js.
 
 ---
 
@@ -29,18 +29,20 @@ Unlike cloud-based auditing platforms that require you to upload sensitive data 
 | Feature | Description |
 |---|---|
 | **Data Pre-Audit** | Validates binary outcomes, detects group imbalance using the four-fifths rule, and reports missing-value imputation decisions before any model is trained |
+| **Configurable Governance Policies** | Applies policy presets for default governance, employment screening, credit lending, medical triage, and low-risk internal tools |
 | **Demographic Parity Difference** | Measures the maximum difference in positive prediction rates between groups for each protected attribute |
 | **Equalized Odds Difference** | Measures the maximum gap in true positive and false positive rates across groups — penalising models that are accurate on average but unfair under the hood |
 | **Disparate Impact Ratio** | Computes the ratio of the lowest to highest selection rate across groups; values below 0.8 violate the legal four-fifths rule |
 | **Statistical Representation** | Reports the positive-outcome rate per protected group relative to the group with the highest rate, flagging ratios below 0.8 (warning) and 0.5 (danger) |
 | **Proxy Variable Detection** | Identifies non-protected features that are strongly correlated with protected attributes using Pearson correlation, Cramér's V, and the correlation ratio — flagging features that may laundering discrimination |
-| **Model Comparison Engine** | Trains and tunes all 9 supported classifiers in parallel, ranks them by a composite Audit Score (balanced accuracy minus average fairness gap), and selects the model that best balances accuracy with fairness |
+| **Model Comparison Engine** | Trains and tunes all 9 supported classifiers, ranks them with policy-configurable accuracy/fairness weights, and marks models that fail policy constraints |
 | **Decision Audit Traces** | Explains individual high-risk predictions using local baseline perturbation: for each flagged row, the contribution of each feature to the prediction is quantified |
 | **Intersectional Bias Analysis** | Analyses combinatorial subgroups (e.g. `race=Black | sex=Female`) to detect bias that disappears in single-attribute averages |
 | **Same-Background Fairness** | Stratified same-background cohort analysis: compares outcomes across protected groups after controlling for up to three non-protected features, isolating discrimination from confounding |
 | **Mitigation Simulation** | Rapid diagnostic simulation that retrains the model after dropping protected attributes and high-risk proxy features to estimate potential fairness gains |
 | **PDF Reports** | Exports a full audit report as a structured PDF including traceability metadata (run ID, dataset SHA-256 hash, model fingerprint) suitable for governance documentation |
-| **Local & Private** | Zero data leaves your machine. Session state is held in-process memory; nothing is persisted to disk or sent to any external service |
+| **Persistent Audit History** | Stores JSON/PDF audit artifacts locally and can mirror report summaries to Firestore when Google credentials are configured |
+| **Safer Prediction CSV Mode** | Audits externally generated prediction CSVs without loading unsafe pickle/joblib artifacts |
 | **Optional Gemini Integration** | When a `GEMINI_API_KEY` is configured, Gemini 2.5 Flash generates a plain-English narrative report for non-technical stakeholders from a compact, anonymised audit summary |
 
 ---
@@ -53,7 +55,7 @@ Navigate to [http://127.0.0.1:8000/audit](http://127.0.0.1:8000/audit). Upload a
 
 ### Step 2 — Configure protected attributes and outcome column
 
-The column configuration table lists every column in your dataset. Toggle the **Protected Attribute** switch for each column you want to monitor for fairness (e.g. `race`, `sex`, `age`). Select the binary **Outcome Column** (the prediction target), choose a model type or let AI Bias Auditor compare all nine, and select whether to train a new model or audit an uploaded one.
+The column configuration table lists every column in your dataset. Toggle the **Protected Attribute** switch for each column you want to monitor for fairness (e.g. `race`, `sex`, `age`). Select the binary **Outcome Column** (the prediction target), choose a governance policy, choose a report template, choose same-background control variables, and select whether to train a model, audit an uploaded model, or audit a prediction CSV.
 
 ### Step 3 — Run pre-audit and/or post-model audit
 
@@ -81,7 +83,53 @@ Results are organised across seven tabs:
 | **UCI Adult Income** | Income prediction | ~48,800 | `sex`, `race` | Detect gender and racial bias in income classification |
 | **German Credit Risk** | Credit scoring | 1,000 | `age` | Assess age-based discrimination in credit decisions |
 
-> **Note:** Demo datasets must be downloaded locally before use. See [Setup & Installation](#setup--installation) below.
+Three CSV demos are bundled in `data/demos/` for immediate local and Docker use. The optional `scripts/download_demos.py` script can refresh larger source datasets, but it is not required for the default demo flow.
+
+Demo sources:
+
+- COMPAS: [ProPublica `compas-analysis`](https://github.com/propublica/compas-analysis), including `compas-scores-two-years.csv`.
+- Adult Income: [UCI Machine Learning Repository Adult dataset](https://archive.ics.uci.edu/dataset/2/adult).
+- German Credit: [UCI Machine Learning Repository Statlog German Credit dataset](https://archive.ics.uci.edu/dataset/144/statlog+german+credit+data).
+
+---
+
+## Governance Policies
+
+Policy presets live in `policies/` and are selected from the audit workspace:
+
+- `default_governance_v1`
+- `employment_screening_strict`
+- `credit_lending_strict`
+- `medical_triage_strict`
+- `low_risk_internal_tool`
+
+Each policy configures fairness thresholds, severity weights, deployment-decision thresholds, model-selection weights, and protected-attribute grouping rules. Every audit records the policy ID and version in traceability metadata, report JSON, and PDF exports.
+
+## Persistence
+
+Audit sessions still keep raw uploaded datasets and unsafe model artifacts in process memory only. Completed reports are persisted as JSON under `data/audit_history/` and are exposed through `/history` and `/api/history`. When `google-cloud-firestore` is installed and `FIRESTORE_PROJECT_ID` plus credentials are configured, report summaries and report JSON are mirrored to Firestore collections `auditRuns` and `reports`.
+
+The stored artifact intentionally avoids raw CSV persistence by default. It stores dataset hashes, model fingerprints, aggregate metrics, policy metadata, report text, severity, and deployment decisions.
+
+## Supported Scope and Limitations
+
+Supported now:
+
+- Tabular binary classification.
+- Locally trained sklearn-compatible model families.
+- Trusted uploaded pickle/joblib models with a visible unsafe-artifact warning.
+- Safer prediction-CSV audits for external models.
+- Configurable policy thresholds, severity scoring, model-selection scoring, grouping presets, report templates, and user-selected same-background controls.
+
+Not yet supported:
+
+- Regression fairness.
+- Ranking/recommendation fairness.
+- Multiclass fairness.
+- LLM, image, audio, or generative-model bias audits.
+- ONNX Runtime Web, Web Workers, WebGPU, or browser-side model execution.
+
+The report includes a limitations section because fairness metrics are governance evidence, not proof of legal compliance or causal discrimination.
 
 ---
 
@@ -106,13 +154,10 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # 3. Install dependencies
 uv pip install -r requirements.txt
 
-# 4. Download demo datasets
-python scripts/download_demos.py
-
-# 5. Start the development server
+# 4. Start the development server
 .venv/bin/uvicorn app.main:app --reload
 
-# 6. Open in your browser
+# 5. Open in your browser
 # http://127.0.0.1:8000
 ```
 
@@ -144,9 +189,12 @@ Get a free API key at [aistudio.google.com](https://aistudio.google.com). When n
 ai-bias-auditor/
 │
 ├── app/                        # FastAPI application package
-│   ├── main.py                 # API routes: /, /audit, /api/upload, /api/audit, /api/report
+│   ├── main.py                 # API routes: /, /audit, /history, /api/upload, /api/audit, /api/report
 │   ├── audit.py                # Core audit engine: cleaning, fairness metrics, model training, traces
+│   ├── governance.py           # Policy scoring, grouping, model-selection, and deployment decisions
+│   ├── policies.py             # Policy loading and validation
 │   ├── report.py               # PDF report generation via ReportLab
+│   ├── storage.py              # Local persistent history plus optional Firestore mirroring
 │   ├── demo_data.py            # Demo dataset registry and loader
 │   │
 │   ├── static/
@@ -162,10 +210,12 @@ ai-bias-auditor/
 │       └── audit.html          # Audit workspace served at /audit
 │
 ├── data/
-│   └── demos/                  # Downloaded demo CSVs (compas.csv, adult.csv, german_credit.csv)
+│   └── demos/                  # Bundled demo CSVs (compas.csv, adult.csv, german_credit.csv)
+│
+├── policies/                   # Configurable governance policy presets
 │
 ├── scripts/
-│   └── download_demos.py       # Downloads and caches the three benchmark datasets
+│   └── download_demos.py       # Optional refresh script for source demo datasets
 │
 ├── tests/
 │   └── test_audit.py           # pytest test suite for the audit engine

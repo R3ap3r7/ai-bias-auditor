@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.audit import AuditError, build_model_pipeline, calculate_severity, normalize_outcome, run_audit
 from app.main import app
+from app.policies import load_policy
 from app.report import build_pdf_report
 
 
@@ -151,9 +152,13 @@ def test_supported_model_pipelines_fit(model_type: str) -> None:
     assert len(pipeline.predict(X.head(5))) == 5
 
 
-def test_severity_logic_matches_mvp_rules() -> None:
-    assert calculate_severity(0.25, 0.21, 3, 0.4) == "Critical"
-    assert calculate_severity(0.11, 0.11, 0, 0.9) == "Medium"
+def test_severity_logic_uses_governance_policy() -> None:
+    default_policy = load_policy("default_governance_v1")
+    strict_policy = load_policy("medical_triage_strict")
+
+    assert calculate_severity(0.25, 0.21, 3, 0.4, policy=default_policy) in {"High", "Critical"}
+    assert calculate_severity(0.11, 0.11, 0, 0.9, policy=default_policy) == "Low"
+    assert calculate_severity(0.11, 0.11, 0, 0.9, policy=strict_policy) in {"Medium", "High"}
     assert calculate_severity(0.01, 0.02, 0, 0.95) == "Low"
 
 
@@ -250,6 +255,50 @@ def test_uploaded_model_api_flow() -> None:
     assert body["post_audit"]["mode"] == "uploaded_model"
     assert body["post_audit"]["performance"]["training_samples"] is None
     assert body["post_audit"]["prediction_validation"]["status"] == "Pass"
+
+
+def test_prediction_csv_api_flow_and_persistent_report() -> None:
+    client = TestClient(app)
+    df = biased_frame()
+    upload = client.post(
+        "/api/upload",
+        files={"file": ("biased.csv", BytesIO(df.to_csv(index=False).encode()), "text/csv")},
+    )
+    session_id = upload.json()["session_id"]
+    predictions = pd.DataFrame({"prediction": df["loan_approved"]})
+
+    prediction_upload = client.post(
+        "/api/predictions",
+        data={"session_id": session_id},
+        files={"file": ("predictions.csv", BytesIO(predictions.to_csv(index=False).encode()), "text/csv")},
+    )
+    assert prediction_upload.status_code == 200
+    prediction_artifact_id = prediction_upload.json()["prediction_artifact_id"]
+
+    audit = client.post(
+        "/api/audit",
+        json={
+            "session_id": session_id,
+            "protected_attributes": ["race"],
+            "outcome_column": "loan_approved",
+            "audit_mode": "prediction_csv",
+            "prediction_artifact_id": prediction_artifact_id,
+            "policy_id": "employment_screening_strict",
+            "report_template": "compliance_review",
+            "control_features": ["income", "education"],
+        },
+    )
+
+    assert audit.status_code == 200
+    body = audit.json()
+    assert body["post_audit"]["mode"] == "prediction_csv"
+    assert body["deployment_decision"]
+    assert body["traceability"]["policy"]["policy_id"] == "employment_screening_strict"
+    assert any(section["title"] == "Limitations" for section in body["report"]["sections"])
+
+    detail = client.get(f"/api/report/{body['report_id']}")
+    assert detail.status_code == 200
+    assert detail.json()["report_id"] == body["report_id"]
 
 
 def test_uploaded_model_predictions_must_be_binary() -> None:

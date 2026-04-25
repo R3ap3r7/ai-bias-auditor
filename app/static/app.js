@@ -1,9 +1,12 @@
 const state = {
   sessionId: null,
   modelId: null,
+  predictionArtifactId: null,
   columns: [],
   defaults: {},
   reportId: null,
+  policies: [],
+  reportTemplates: [],
 };
 
 const els = {
@@ -19,9 +22,17 @@ const els = {
   outcomeSelect: document.getElementById("outcomeSelect"),
   modelSelect: document.getElementById("modelSelect"),
   auditModeSelect: document.getElementById("auditModeSelect"),
+  policySelect: document.getElementById("policySelect"),
+  reportTemplateSelect: document.getElementById("reportTemplateSelect"),
+  modelPriority: document.getElementById("modelPriority"),
+  modelPriorityLabel: document.getElementById("modelPriorityLabel"),
+  controlFeatureOptions: document.getElementById("controlFeatureOptions"),
   modelUploadForm: document.getElementById("modelUploadForm"),
   modelFile: document.getElementById("modelFile"),
   modelStatus: document.getElementById("modelStatus"),
+  predictionUploadForm: document.getElementById("predictionUploadForm"),
+  predictionFile: document.getElementById("predictionFile"),
+  predictionStatus: document.getElementById("predictionStatus"),
   runPreAuditButton: document.getElementById("runPreAuditButton"),
   runAuditButton: document.getElementById("runAuditButton"),
   resetButton: document.getElementById("resetButton"),
@@ -44,6 +55,8 @@ const els = {
   modelPerformance: document.getElementById("modelPerformance"),
   biasScorecard: document.getElementById("biasScorecard"),
   traceabilityTable: document.getElementById("traceabilityTable"),
+  governanceDecision: document.getElementById("governanceDecision"),
+  groupingPreview: document.getElementById("groupingPreview"),
   conditionalFairness: document.getElementById("conditionalFairness"),
   intersectionalBias: document.getElementById("intersectionalBias"),
   auditTrace: document.getElementById("auditTrace"),
@@ -89,10 +102,13 @@ function initScrollAnimations() {
 
 document.addEventListener("DOMContentLoaded", () => {
   loadDemos();
+  loadPolicies();
   initScrollAnimations();
   els.uploadForm.addEventListener("submit", uploadDataset);
   els.modelUploadForm.addEventListener("submit", uploadModel);
+  els.predictionUploadForm.addEventListener("submit", uploadPredictions);
   els.auditModeSelect.addEventListener("change", toggleModelUpload);
+  els.modelPriority.addEventListener("input", renderPriorityLabel);
   els.runPreAuditButton.addEventListener("click", runPreAudit);
   els.runAuditButton.addEventListener("click", runAudit);
   els.resetButton.addEventListener("click", resetApp);
@@ -131,7 +147,7 @@ async function loadDemos() {
           <span style="font-weight: 600; display: block; margin-bottom: 0.25rem;">${escapeHtml(demo.name)}</span>
           <span class="status">
             <span class="status-dot"></span>
-            ${demo.available ? "Preloaded & Ready" : "Run scripts/download_demos.py"}
+            ${demo.available ? "Bundled & Ready" : "Demo CSV missing"}
           </span>
         </button>
       `,
@@ -140,6 +156,19 @@ async function loadDemos() {
   els.demoButtons.querySelectorAll("button:not([disabled])").forEach((button) => {
     button.addEventListener("click", () => loadDemo(button.dataset.demoId));
   });
+}
+
+async function loadPolicies() {
+  const data = await requestJson("/api/policies");
+  state.policies = data.policies || [];
+  state.reportTemplates = data.report_templates || [];
+  els.policySelect.innerHTML = state.policies
+    .map((policy) => `<option value="${escapeHtml(policy.policy_id)}">${escapeHtml(policy.name)} (${escapeHtml(policy.version)})</option>`)
+    .join("");
+  els.reportTemplateSelect.innerHTML = state.reportTemplates
+    .map((template) => `<option value="${escapeHtml(template.template_id)}">${escapeHtml(template.title)}</option>`)
+    .join("");
+  renderPriorityLabel();
 }
 
 async function uploadDataset(event) {
@@ -204,9 +233,40 @@ async function uploadModel(event) {
   }
 }
 
+async function uploadPredictions(event) {
+  event.preventDefault();
+  clearMessage();
+  if (!state.sessionId) {
+    showMessage("Upload a dataset before uploading predictions.", "error");
+    return;
+  }
+  const file = els.predictionFile.files[0];
+  if (!file) {
+    showMessage("Choose a prediction CSV.", "error");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("session_id", state.sessionId);
+  formData.append("file", file);
+  setBusy("Uploading predictions...");
+  try {
+    const data = await requestJson("/api/predictions", { method: "POST", body: formData });
+    state.predictionArtifactId = data.prediction_artifact_id;
+    els.predictionStatus.textContent = `${data.filename} loaded with ${data.rows} predictions from column ${data.details.selected_column}.`;
+  } catch (error) {
+    state.predictionArtifactId = null;
+    els.predictionStatus.textContent = "";
+    showMessage(error.message, "error");
+  } finally {
+    clearBusy();
+  }
+}
+
 function configureDataset(data) {
   state.sessionId = data.session_id;
   state.modelId = null;
+  state.predictionArtifactId = null;
   state.columns = data.profile.column_names;
   state.defaults = data.defaults || {};
   state.reportId = null;
@@ -218,8 +278,13 @@ function configureDataset(data) {
   els.severityBadge.classList.add("hidden");
   els.preAuditBadge.classList.add("hidden");
   els.modelStatus.textContent = "";
+  els.predictionStatus.textContent = "";
   els.modelFile.value = "";
+  els.predictionFile.value = "";
   els.auditModeSelect.value = "train";
+  if (state.defaults.policy_id && Array.from(els.policySelect.options).some((option) => option.value === state.defaults.policy_id)) {
+    els.policySelect.value = state.defaults.policy_id;
+  }
   toggleModelUpload();
 
   els.datasetSummary.textContent = `${data.profile.rows} rows, ${data.profile.columns} columns loaded from ${data.name || data.source}.`;
@@ -250,6 +315,7 @@ function configureDataset(data) {
   if (state.defaults.model_type) {
     els.modelSelect.value = state.defaults.model_type;
   }
+  renderControlFeatureOptions();
   
   // Scroll to config section with animation
   setTimeout(() => {
@@ -270,6 +336,11 @@ function selectedAuditPayload() {
     model_type: els.modelSelect.value,
     audit_mode: els.auditModeSelect.value,
     model_id: state.modelId,
+    prediction_artifact_id: state.predictionArtifactId,
+    policy_id: els.policySelect.value,
+    report_template: els.reportTemplateSelect.value,
+    control_features: selectedControlFeatures(),
+    model_selection_priority: Number(els.modelPriority.value) / 100,
   };
 }
 
@@ -309,6 +380,10 @@ async function runAudit() {
   }
   if (payload.audit_mode === "uploaded_model" && !state.modelId) {
     showMessage("Upload a model before running uploaded-model audit.", "error");
+    return;
+  }
+  if (payload.audit_mode === "prediction_csv" && !state.predictionArtifactId) {
+    showMessage("Upload a prediction CSV before running prediction-only audit.", "error");
     return;
   }
 
@@ -381,6 +456,8 @@ function renderDataOverview(result) {
 
   const rows = [
     ["Action", "Details"],
+    ["Governance policy", `${dataset.policy_name || dataset.policy_id || ""}`],
+    ["Deployment decision", result.deployment_decision || "Only available after post-model audit"],
     ["Dropped columns over 50% missing", cleaning.dropped_columns_over_50_percent_missing.join(", ") || "None"],
     ["Outcome mapping", JSON.stringify(cleaning.outcome_mapping)],
     ["Rows after cleaning", cleaning.rows_after_cleaning],
@@ -460,10 +537,33 @@ function renderPostAudit(postAudit) {
 
 function renderGovernance(result) {
   const postAudit = result.post_audit || result.model;
+  renderGovernanceDecision(result.governance || {});
+  renderGroupingPreview(result.grouping_preview || result.pre_audit?.grouping_preview || []);
   renderTraceability(result.traceability || {});
   renderConditionalFairness(postAudit.conditional_fairness || {});
   renderIntersectionalBias(postAudit.intersectional_bias || {});
   renderAuditTrace(postAudit.audit_trace || {});
+}
+
+function renderGovernanceDecision(governance) {
+  const rows = [["Field", "Value"]];
+  rows.push(["Risk score", governance.risk_score ?? ""]);
+  rows.push(["Severity", raw(badge(governance.severity || "Info"))]);
+  rows.push(["Deployment decision", governance.deployment_decision || ""]);
+  rows.push(["Policy", `${governance.policy_name || ""} ${governance.policy_version || ""}`]);
+  for (const driver of governance.top_risk_drivers || []) {
+    rows.push(["Risk driver", driver]);
+  }
+  els.governanceDecision.innerHTML = table(rows);
+}
+
+function renderGroupingPreview(preview) {
+  const rows = [["Column", "Detected type", "Method", "Groups"]];
+  for (const item of preview || []) {
+    rows.push([item.column, item.detected_type, item.grouping_method, (item.groups || []).join(", ")]);
+  }
+  if (rows.length === 1) rows.push(["No grouping preview available", "", "", ""]);
+  els.groupingPreview.innerHTML = table(rows);
 }
 
 function renderTraceability(traceability) {
@@ -569,7 +669,7 @@ function renderModelComparison(rows) {
     return;
   }
   const tableRows = [
-    ["Selected", "Model", "Tuning", "CV", "Balanced acc", "Accuracy", "Precision", "Recall", "Max DP", "Max EO", "Audit score", "Best params"],
+    ["Selected", "Model", "Tuning", "CV", "Balanced acc", "Accuracy", "Precision", "Recall", "Max DP", "Max EO", "Audit score", "Fails policy", "Best params"],
   ];
   for (const row of rows) {
     tableRows.push([
@@ -584,6 +684,7 @@ function renderModelComparison(rows) {
       row.max_demographic_parity_difference ?? "",
       row.max_equalized_odds_difference ?? "",
       row.audit_selection_score ?? "",
+      row.fails_policy ? (row.policy_failures || []).join("; ") : "No",
       row.error || JSON.stringify(row.best_params || {}),
     ]);
   }
@@ -681,7 +782,13 @@ function renderSimulation(simulation) {
 
 function renderReport(result) {
   els.reportSource.textContent = result.report.source;
-  els.reportText.textContent = result.report.text;
+  if (result.report.sections?.length) {
+    els.reportText.innerHTML = result.report.sections
+      .map((section) => `<section style="margin-bottom:1rem;"><h3 style="font-weight:700;margin-bottom:0.35rem;">${escapeHtml(section.title)}</h3><p style="white-space:pre-wrap;color:#d4d4d8;">${escapeHtml(section.content)}</p></section>`)
+      .join("");
+  } else {
+    els.reportText.textContent = result.report.text;
+  }
   els.downloadPdf.href = `/api/report/${result.report_id}/pdf`;
   els.downloadPdf.classList.remove("hidden");
 }
@@ -689,6 +796,7 @@ function renderReport(result) {
 function resetApp() {
   state.sessionId = null;
   state.modelId = null;
+  state.predictionArtifactId = null;
   state.columns = [];
   state.defaults = {};
   state.reportId = null;
@@ -700,7 +808,9 @@ function resetApp() {
   els.preAuditBadge.classList.add("hidden");
   els.csvFile.value = "";
   els.modelFile.value = "";
+  els.predictionFile.value = "";
   els.modelStatus.textContent = "";
+  els.predictionStatus.textContent = "";
   clearMessage();
 }
 
@@ -715,8 +825,34 @@ function hidePostAuditSections() {
 
 function toggleModelUpload() {
   const useUpload = els.auditModeSelect.value === "uploaded_model";
+  const usePredictions = els.auditModeSelect.value === "prediction_csv";
   els.modelUploadForm.classList.toggle("hidden", !useUpload);
-  els.modelSelect.disabled = useUpload;
+  els.predictionUploadForm.classList.toggle("hidden", !usePredictions);
+  els.modelSelect.disabled = useUpload || usePredictions;
+}
+
+function renderPriorityLabel() {
+  const accuracy = Number(els.modelPriority.value);
+  els.modelPriorityLabel.textContent = `Balanced: ${accuracy}% accuracy / ${100 - accuracy}% fairness`;
+}
+
+function renderControlFeatureOptions() {
+  const protectedDefaults = new Set(state.defaults.protected_attributes || []);
+  const outcome = state.defaults.outcome_column || els.outcomeSelect.value;
+  const defaultControls = new Set(state.defaults.control_features || []);
+  els.controlFeatureOptions.innerHTML = state.columns
+    .filter((column) => column !== outcome && !protectedDefaults.has(column))
+    .map((column) => `
+      <label class="checkbox-wrapper" style="padding:0.5rem;border:1px solid #27272a;border-radius:8px;">
+        <input type="checkbox" class="control-feature-checkbox" value="${escapeHtml(column)}" ${defaultControls.has(column) ? "checked" : ""} />
+        <span style="font-size:0.875rem;color:var(--text-secondary);">${escapeHtml(column)}</span>
+      </label>
+    `)
+    .join("");
+}
+
+function selectedControlFeatures() {
+  return Array.from(document.querySelectorAll(".control-feature-checkbox:checked")).map((input) => input.value);
 }
 
 function setBusy(text) {

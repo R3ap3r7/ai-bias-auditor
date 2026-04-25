@@ -5,6 +5,7 @@ __pycache__/
 .playwright-cli/
 .DS_Store
 .env
+data/audit_history/
 .env.*
 !.env.example
 output/
