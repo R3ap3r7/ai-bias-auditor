@@ -70,6 +70,11 @@ async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "index.html", {})
 
 
+@app.get("/audit", response_class=HTMLResponse)
+async def audit_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "audit.html", {})
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
