@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚖️ Themis
+# AI Bias Auditor
 
 ### *Local. Private. Fair.*
 
@@ -10,8 +10,6 @@
 [![Fairlearn](https://img.shields.io/badge/Fairlearn-0.10+-7c3aed?style=for-the-badge&color=7c3aed)](https://fairlearn.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-7c3aed?style=for-the-badge)](LICENSE)
 
-![Themis UI](docs/screenshot.png)
-
 </div>
 
 ---
@@ -20,9 +18,9 @@
 
 Algorithmic bias is not a hypothetical risk — it is a documented, recurring harm. The **COMPAS recidivism algorithm** was found to predict higher recuse rates for Black defendants at nearly twice the rate of white defendants. Amazon scrapped an internal hiring algorithm after it systematically downgraded résumés that included the word *women's*. Credit scoring models trained on postcode data routinely encode historical redlining, penalising applicants not for their credit behaviour but for where they live. These systems cause real harm at scale, and most practitioners have no practical way to audit them before deployment.
 
-**Themis** is a local, privacy-first fairness auditing tool that gives teams the ability to measure, understand, and document bias in their ML models — before a single prediction reaches a real person. Upload a CSV dataset and a trained model (or let Themis train one), mark your protected attributes, and receive a full fairness report covering demographic parity, equalized odds, disparate impact, proxy variable detection, intersectional group analysis, and row-level decision traces — all within minutes.
+**AI Bias Auditor** is a local, privacy-first fairness auditing tool that gives teams the ability to measure, understand, and document bias in their ML models — before a single prediction reaches a real person. Upload a CSV dataset and a trained model (or let AI Bias Auditor train one), mark your protected attributes, and receive a full fairness report covering demographic parity, equalized odds, disparate impact, proxy variable detection, intersectional group analysis, and row-level decision traces — all within minutes.
 
-Unlike cloud-based auditing platforms that require you to upload sensitive data to third-party servers, Themis runs entirely on your machine. Every computation — model training, fairness metric calculation, report generation — happens locally. No data ever leaves your environment. When optional Gemini AI integration is enabled, only a compact, anonymised audit summary (not raw data) is sent to generate a plain-English narrative; the full dataset never touches the network.
+Unlike cloud-based auditing platforms that require you to upload sensitive data to third-party servers, AI Bias Auditor runs entirely on your machine. Every computation — model training, fairness metric calculation, report generation — happens locally. No data ever leaves your environment. When optional Gemini AI integration is enabled, only a compact, anonymised audit summary (not raw data) is sent to generate a plain-English narrative; the full dataset never touches the network.
 
 ---
 
@@ -51,11 +49,11 @@ Unlike cloud-based auditing platforms that require you to upload sensitive data 
 
 ### Step 1 — Upload or select a dataset
 
-Navigate to [http://127.0.0.1:8000/audit](http://127.0.0.1:8000/audit). Upload any CSV file, or choose one of the three preloaded benchmark datasets. Themis profiles the uploaded data immediately — reporting row count, column count, missing value rates, and a five-row preview.
+Navigate to [http://127.0.0.1:8000/audit](http://127.0.0.1:8000/audit). Upload any CSV file, or choose one of the three preloaded benchmark datasets. AI Bias Auditor profiles the uploaded data immediately — reporting row count, column count, missing value rates, and a five-row preview.
 
 ### Step 2 — Configure protected attributes and outcome column
 
-The column configuration table lists every column in your dataset. Toggle the **Protected Attribute** switch for each column you want to monitor for fairness (e.g. `race`, `sex`, `age`). Select the binary **Outcome Column** (the prediction target), choose a model type or let Themis compare all nine, and select whether to train a new model or audit an uploaded one.
+The column configuration table lists every column in your dataset. Toggle the **Protected Attribute** switch for each column you want to monitor for fairness (e.g. `race`, `sex`, `age`). Select the binary **Outcome Column** (the prediction target), choose a model type or let AI Bias Auditor compare all nine, and select whether to train a new model or audit an uploaded one.
 
 ### Step 3 — Run pre-audit and/or post-model audit
 
@@ -98,8 +96,8 @@ Results are organised across seven tabs:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/TheVijayVignesh/Themis.git
-cd Themis
+git clone https://github.com/R3ap3r7/ai-bias-auditor.git
+cd ai-bias-auditor
 
 # 2. Create a virtual environment with Python 3.12
 uv venv --python 3.12
@@ -136,14 +134,14 @@ GEMINI_API_KEY=your_google_ai_studio_key_here
 GEMINI_MODEL=gemini-2.5-flash   # optional, this is the default
 ```
 
-Get a free API key at [aistudio.google.com](https://aistudio.google.com). When no key is configured, Themis falls back to a deterministic local report automatically.
+Get a free API key at [aistudio.google.com](https://aistudio.google.com). When no key is configured, AI Bias Auditor falls back to a deterministic local report automatically.
 
 ---
 
 ## Project Structure
 
 ```
-Themis/
+ai-bias-auditor/
 │
 ├── app/                        # FastAPI application package
 │   ├── main.py                 # API routes: /, /audit, /api/upload, /api/audit, /api/report
@@ -183,7 +181,7 @@ Themis/
 
 ## Fairness Metrics Explained
 
-Themis computes four primary fairness metrics per protected attribute. All metrics are computed on the **held-out test split** (20% of the dataset) to reflect true generalisation behaviour.
+AI Bias Auditor computes four primary fairness metrics per protected attribute. All metrics are computed on the **held-out test split** (20% of the dataset) to reflect true generalisation behaviour.
 
 ### Demographic Parity Difference
 > *Are positive predictions given at similar rates to all groups?*
@@ -203,7 +201,7 @@ Computed as: `min(selection_rate across groups) / max(selection_rate across grou
 ### Statistical Parity Difference (Representation Ratio)
 > *Are all groups represented fairly in the training data's positive outcomes?*
 
-Measured during the **Data Pre-Audit** phase, before model training. For each group within a protected attribute, Themis computes the ratio of that group's positive outcome rate to the group with the highest rate. Ratios below `0.8` are warned; below `0.5` are flagged Red. This is distinct from demographic parity difference because it measures the **data distribution**, not the model's predictions.
+Measured during the **Data Pre-Audit** phase, before model training. For each group within a protected attribute, AI Bias Auditor computes the ratio of that group's positive outcome rate to the group with the highest rate. Ratios below `0.8` are warned; below `0.5` are flagged Red. This is distinct from demographic parity difference because it measures the **data distribution**, not the model's predictions.
 
 ---
 
