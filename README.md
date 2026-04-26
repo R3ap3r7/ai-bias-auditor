@@ -20,7 +20,7 @@ Algorithmic bias is not a hypothetical risk — it is a documented, recurring ha
 
 **AI Bias Auditor** is a local, privacy-first fairness auditing tool that gives teams the ability to measure, understand, and document bias in their ML models — before a single prediction reaches a real person. Upload a CSV dataset and a trained model (or let AI Bias Auditor train one), mark your protected attributes, and receive a full fairness report covering demographic parity, equalized odds, disparate impact, proxy variable detection, intersectional group analysis, and row-level decision traces — all within minutes.
 
-Raw datasets and uploaded model artifacts are processed by the audit engine and are not persisted by default. Uploaded model artifacts are disabled in the UI and API by default for this release; use prediction CSV mode unless `ENABLE_UPLOADED_MODEL_MODE=true` is explicitly configured for trusted local testing. Optional Gemini reporting sends a compact audit summary, not raw CSV rows, to generate advisory stakeholder language. Optional Firestore history stores report artifacts and aggregate governance metadata. For fully offline use, disable Gemini, leave Firestore unconfigured, and self-host frontend assets such as fonts and Chart.js.
+Raw datasets and uploaded model artifacts are processed by the audit engine and are not persisted by default. Uploaded model artifacts are disabled in the UI and API by default for this release; use prediction CSV mode unless `ENABLE_UPLOADED_MODEL_MODE=true` is explicitly configured for trusted local testing. Optional Gemini reporting sends a compact audit summary, not raw CSV rows, to generate advisory stakeholder language. Optional Firestore history stores report artifacts and aggregate governance metadata. For offline or guest use, disable Gemini and leave Firestore sign-in unused.
 
 ---
 
@@ -109,7 +109,7 @@ Each policy configures fairness thresholds, severity weights, deployment-decisio
 
 Audit sessions still keep raw uploaded datasets and unsafe model artifacts in process memory only. Completed reports are persisted as JSON under `data/audit_history/` and are exposed through `/history` and `/api/history`. Report persistence modes are `aggregate_only`, `anonymized_traces`, and `full_report`; the default is `anonymized_traces` unless `REPORT_PERSISTENCE_MODE` is configured. Production deployments should use `aggregate_only` or `anonymized_traces`.
 
-The Flutter/Firebase app in `flutter_firebase_auditor/` is the only supported user-facing UI. It requires Google sign-in, shows the signed-in user's name and profile image, and writes user-scoped audit history to Cloud Firestore under each authenticated account. The FastAPI app is the audit API and report backend; its legacy HTML routes redirect to the Flutter frontend via `FRONTEND_URL` (default `http://localhost:5050`).
+The Flutter/Firebase app in `flutter_firebase_auditor/` is the only supported user-facing UI. Users can run audits in guest mode, or sign in with Google to show their account profile and write user-scoped audit history to Cloud Firestore. The FastAPI app is the audit API and report backend; user-facing routes redirect to the Flutter frontend via `FRONTEND_URL` (default `http://localhost:5050`).
 
 The stored artifact intentionally avoids raw CSV persistence by default and does not persist uploaded pickle/joblib model artifacts. It stores dataset hashes, model fingerprints, aggregate metrics, policy metadata, report text or report metadata depending on persistence mode, severity, and deployment decisions.
 
@@ -199,19 +199,9 @@ ai-bias-auditor/
 │   ├── policies.py             # Policy loading and validation
 │   ├── report.py               # PDF report generation via ReportLab
 │   ├── storage.py              # Local persistent history plus optional Firestore mirroring
-│   ├── demo_data.py            # Demo dataset registry and loader
-│   │
-│   ├── static/
-│   │   ├── app.js              # Frontend application logic, API calls, result rendering
-│   │   ├── audit.js            # Audit workspace: tab system, Chart.js charts, toggle switches
-│   │   ├── audit.css           # Audit workspace design system (dark theme, toggles, tabs)
-│   │   ├── landing.js          # Landing page animations, parallax, intersection observer
-│   │   ├── landing.css         # Landing page design system (glassmorphism, gradients)
-│   │   └── styles.css          # Base CSS variables and shared utility classes
-│   │
-│   └── templates/
-│       ├── index.html          # Marketing landing page served at /
-│       └── audit.html          # Audit workspace served at /audit
+│   └── demo_data.py            # Demo dataset registry and loader
+│
+├── flutter_firebase_auditor/   # Flutter web frontend, Firebase Auth, Firestore history, Hosting config
 │
 ├── data/
 │   └── demos/                  # Bundled demo CSVs (compas.csv, adult.csv, german_credit.csv)
@@ -264,7 +254,7 @@ Measured during the **Data Pre-Audit** phase, before model training. For each gr
 | Technology | Purpose |
 |---|---|
 | **Python 3.12** | Primary runtime; `datetime.UTC` requires 3.11+ |
-| **FastAPI 0.115+** | REST API framework; serves HTML templates and JSON endpoints |
+| **FastAPI 0.115+** | REST API framework for JSON APIs, redirects, and report downloads |
 | **uvicorn** | ASGI server with hot-reload for development |
 | **scikit-learn 1.5+** | Model training, preprocessing pipelines, hyperparameter tuning via `GridSearchCV` |
 | **Fairlearn 0.10+** | `demographic_parity_difference` and `equalized_odds_difference` computation |
@@ -272,8 +262,8 @@ Measured during the **Data Pre-Audit** phase, before model training. For each gr
 | **NumPy 1.26+** | Numerical operations and array-level metric computation |
 | **SciPy 1.13+** | Pearson correlation and chi-squared tests for proxy variable detection |
 | **ReportLab 4.2+** | PDF report generation with styled tables and traceability metadata |
-| **Jinja2 3.1+** | Server-side HTML templating |
-| **Chart.js 4.4** | Interactive bar charts for representation, bias, model comparison, and feature importance |
+| **Flutter Web** | Single supported user-facing frontend with audit setup, result review, and Firebase history |
+| **Firebase Auth / Firestore** | Google sign-in, guest-capable workflow, and user-scoped saved audit history |
 | **Google Generative AI 0.8+** | Optional Gemini 2.5 Flash integration for plain-English narrative reports |
 | **python-dotenv** | `.env` file loading for API key configuration |
 

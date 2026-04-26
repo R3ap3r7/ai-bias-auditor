@@ -35,7 +35,7 @@ python -m compileall app scripts tests
 Key Files
 ---------
 app/main.py
-FastAPI app entry point. Defines the health check, demo dataset API, CSV upload API, prediction CSV API, audit API, and PDF report download API. Legacy HTML routes redirect to Flutter.
+FastAPI app entry point. Defines the health check, demo dataset API, CSV upload API, prediction CSV API, audit API, and PDF report download API. User-facing routes redirect to Flutter.
 
 app/audit.py
 Core bias audit engine. Handles CSV cleaning, missing values, outcome normalization, data-only pre-audit, representation balance, proxy detection, local hyperparameter tuning, tuned model comparison, uploaded-model prediction audits, Fairlearn metrics, conditional same-background analysis, intersectional analysis, row-level decision audit traces, run traceability metadata, feature importance, mitigation simulation, severity scoring, and Gemini report generation.
@@ -45,12 +45,6 @@ Demo dataset registry and loader for COMPAS, UCI Adult, and German Credit. Requi
 
 app/report.py
 Builds downloadable PDF reports with ReportLab, including model comparison, traceability, conditional fairness, intersectional bias, and decision audit trace sections.
-
-app/templates/index.html
-Legacy HTML interface retained only as source history; Flutter is the supported UI.
-
-app/static/app.js
-Legacy HTML frontend behavior retained only as source history; Flutter is the supported UI.
 
 scripts/download_demos.py
 Downloads and preprocesses COMPAS, UCI Adult, and German Credit demo CSVs into data/demos.
@@ -68,7 +62,7 @@ Dockerfile
 Cloud Run compatible container definition.
 
 flutter_firebase_auditor/lib/screens/dashboard_screen.dart
-Flutter web UI for required Google login, audit workspace, separated results review, saved Firebase history, prediction CSV controls, pre-audit, post-audit, audit trace, PDF reports, and Gemini analysis.
+Flutter web UI for guest mode, Google login, audit workspace, separated results review, saved Firebase history, prediction CSV controls, pre-audit, post-audit, model comparison, governance trace, feature importance, mitigation simulation, PDF reports, and Gemini/local analysis.
 
 flutter_firebase_auditor/lib/services/backend_client.dart
 Typed Flutter HTTP client for the FastAPI upload, demo, prediction CSV, pre-audit, full audit, and PDF report APIs.

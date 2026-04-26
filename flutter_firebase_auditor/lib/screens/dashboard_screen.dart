@@ -12,6 +12,16 @@ import '../widgets/ui_shell.dart';
 
 enum _AuditPage { workspace, results, history }
 
+enum _ResultTab {
+  overview,
+  preAudit,
+  bias,
+  model,
+  governance,
+  features,
+  report
+}
+
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({
     super.key,
@@ -39,11 +49,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _reportTemplate = 'full_report';
   double _modelSelectionPriority = 0.55;
   bool _busy = false;
+  bool _guestMode = false;
   String? _statusMessage;
   String? _errorMessage;
   Map<String, dynamic>? _preAuditResult;
   Map<String, dynamic>? _auditResult;
   _AuditPage _selectedPage = _AuditPage.workspace;
+  _ResultTab _selectedResultTab = _ResultTab.overview;
   final TextEditingController _predictionColumnController =
       TextEditingController();
   final TextEditingController _scoreColumnController = TextEditingController();
@@ -51,11 +63,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final TextEditingController _predictionRowIdController =
       TextEditingController();
 
-  static const _demoDatasets = {
-    'compas': 'COMPAS',
-    'adult': 'UCI Adult',
-    'german': 'German Credit',
-  };
+  List<DemoDatasetInfo> _demoDatasets = _defaultDemoDatasets;
+  List<OptionItem> _policyOptions = _defaultPolicyOptions;
+  List<OptionItem> _reportTemplateOptions = _defaultReportTemplateOptions;
+
+  static const _defaultDemoDatasets = [
+    DemoDatasetInfo(
+      id: 'compas',
+      name: 'COMPAS',
+      available: true,
+      protectedAttributes: ['race', 'gender', 'age_cat'],
+      outcomeColumn: 'two_year_recid',
+      modelType: 'compare_all',
+    ),
+    DemoDatasetInfo(
+      id: 'adult',
+      name: 'UCI Adult',
+      available: true,
+      protectedAttributes: ['sex', 'race'],
+      outcomeColumn: 'income',
+      modelType: 'compare_all',
+    ),
+    DemoDatasetInfo(
+      id: 'german',
+      name: 'German Credit',
+      available: true,
+      protectedAttributes: ['age'],
+      outcomeColumn: 'credit_risk',
+      modelType: 'compare_all',
+    ),
+  ];
 
   static const _modelOptions = {
     'compare_all': 'Compare all tuned models',
@@ -70,21 +107,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
     'gaussian_nb': 'Gaussian Naive Bayes',
   };
 
-  static const _policyOptions = {
-    'default_governance_v1': 'Default Governance',
-    'employment_screening_strict': 'Employment Screening',
-    'credit_lending_strict': 'Credit Lending',
-    'medical_triage_strict': 'Medical Triage',
-    'low_risk_internal_tool': 'Low-Risk Internal Tool',
-  };
+  static const _defaultPolicyOptions = [
+    OptionItem(id: 'default_governance_v1', label: 'Default Governance'),
+    OptionItem(
+        id: 'employment_screening_strict', label: 'Employment Screening'),
+    OptionItem(id: 'credit_lending_strict', label: 'Credit Lending'),
+    OptionItem(id: 'medical_triage_strict', label: 'Medical Triage'),
+    OptionItem(id: 'low_risk_internal_tool', label: 'Low-Risk Internal Tool'),
+  ];
 
-  static const _reportTemplateOptions = {
-    'full_report': 'Full Report',
-    'executive_summary': 'Executive Summary',
-    'technical_audit': 'Technical Audit',
-    'compliance_review': 'Compliance Review',
-    'model_card': 'Model Card',
-  };
+  static const _defaultReportTemplateOptions = [
+    OptionItem(id: 'full_report', label: 'Full Report'),
+    OptionItem(id: 'executive_summary', label: 'Executive Summary'),
+    OptionItem(id: 'technical_audit', label: 'Technical Audit'),
+    OptionItem(id: 'compliance_review', label: 'Compliance Review'),
+    OptionItem(id: 'model_card', label: 'Model Card'),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadBackendCatalog();
+  }
 
   @override
   void dispose() {
@@ -102,7 +146,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         stream: widget.auditRepository.authStateChanges(),
         builder: (context, authSnapshot) {
           final user = authSnapshot.data;
-          if (user == null) {
+          if (user == null && !_guestMode) {
             return _buildLoginGate();
           }
 
@@ -121,6 +165,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         onSelect: (page) =>
                             setState(() => _selectedPage = page),
                         onNewAudit: _startNewAudit,
+                        onSignIn: _signInWithGoogle,
                       ),
                       content,
                     ],
@@ -139,6 +184,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       selectedPage: _selectedPage,
                       onSelect: (page) => setState(() => _selectedPage = page),
                       onNewAudit: _startNewAudit,
+                      onSignIn: _signInWithGoogle,
                     ),
                   ),
                   Expanded(child: content),
@@ -189,15 +235,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 runSpacing: 12,
                 children: [
                   ElevatedButton.icon(
-                    onPressed: () async {
-                      try {
-                        await widget.auditRepository.signInWithGoogle();
-                      } catch (error) {
-                        setState(() => _errorMessage = error.toString());
-                      }
-                    },
+                    onPressed: widget.auditRepository.enabled
+                        ? _signInWithGoogle
+                        : null,
                     icon: const Icon(Icons.login),
                     label: const Text('Sign in with Google'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _continueAsGuest,
+                    icon: const Icon(Icons.person_outline),
+                    label: const Text('Continue as guest'),
                   ),
                 ],
               ),
@@ -212,7 +259,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 const SizedBox(height: 16),
               ],
               Text(
-                'CSV files are processed by the audit engine and are not stored in Firebase.',
+                widget.auditRepository.enabled
+                    ? 'CSV files are processed by the audit engine and are not stored in Firebase.'
+                    : widget.auditRepository.disabledReason,
                 style: Theme.of(context)
                     .textTheme
                     .bodyMedium
@@ -342,15 +391,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 const SizedBox(height: 20),
                 _buildProgressLane(),
               ] else if (_selectedPage == _AuditPage.results) ...[
-                _buildResultsOverview(),
-                const SizedBox(height: 20),
-                _buildPreAuditSection(),
-                const SizedBox(height: 20),
-                _buildPostAuditSection(),
-                const SizedBox(height: 20),
-                _buildTraceSection(),
-                const SizedBox(height: 20),
-                _buildGeminiSection(),
+                _buildResultsWorkspace(),
               ] else ...[
                 _HistoryReview(
                   repository: widget.auditRepository,
@@ -391,7 +432,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ],
           ),
         ),
-        if (user != null) _UserBadge(user: user),
+        if (user != null)
+          _UserBadge(user: user)
+        else
+          const StatusPill(
+            label: 'Guest',
+            color: AppColors.warning,
+            backgroundColor: AppColors.warningContainer,
+          ),
         const SizedBox(width: 8),
         if (severity.isNotEmpty) _severityPill(severity),
       ],
@@ -453,6 +501,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ? 'Run an audit to populate the review workspace.'
                 : _readString(report['source'],
                     fallback: 'Report source pending'),
+            trailing: _dataset == null
+                ? null
+                : OutlinedButton.icon(
+                    onPressed: () =>
+                        setState(() => _selectedPage = _AuditPage.workspace),
+                    icon: const Icon(Icons.tune_outlined),
+                    label: const Text('Audit setup'),
+                  ),
           ),
           const SizedBox(height: 16),
           Wrap(
@@ -486,6 +542,71 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildResultsWorkspace() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildResultsOverview(),
+        const SizedBox(height: 20),
+        _buildResultTabBar(),
+        const SizedBox(height: 20),
+        switch (_selectedResultTab) {
+          _ResultTab.overview => _buildRunOverviewSection(),
+          _ResultTab.preAudit => _buildPreAuditSection(),
+          _ResultTab.bias => _buildPostAuditSection(),
+          _ResultTab.model => _buildModelComparisonSection(),
+          _ResultTab.governance => _buildTraceSection(),
+          _ResultTab.features => _buildFeatureAuditSection(),
+          _ResultTab.report => _buildGeminiSection(),
+        },
+      ],
+    );
+  }
+
+  Widget _buildResultTabBar() {
+    final tabs = [
+      (_ResultTab.overview, Icons.dashboard_outlined, 'Overview'),
+      (_ResultTab.preAudit, Icons.fact_check_outlined, 'Data Pre-Audit'),
+      (_ResultTab.bias, Icons.balance_outlined, 'Bias Scorecard'),
+      (_ResultTab.model, Icons.tune_outlined, 'Model Comparison'),
+      (_ResultTab.governance, Icons.account_tree_outlined, 'Decision Traces'),
+      (_ResultTab.features, Icons.insights_outlined, 'Features'),
+      (_ResultTab.report, Icons.description_outlined, 'Report'),
+    ];
+
+    return SurfacePanel(
+      padding: const EdgeInsets.all(12),
+      backgroundColor: AppColors.surfaceLow,
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: tabs.map((tab) {
+          final selected = _selectedResultTab == tab.$1;
+          return ChoiceChip(
+            selected: selected,
+            avatar: Icon(
+              tab.$2,
+              size: 18,
+              color: selected ? Colors.white : AppColors.muted,
+            ),
+            label: Text(tab.$3),
+            onSelected: (_) => setState(() => _selectedResultTab = tab.$1),
+            selectedColor: AppColors.primary,
+            labelStyle: TextStyle(
+              color: selected ? Colors.white : AppColors.text,
+              fontWeight: FontWeight.w700,
+            ),
+            side: BorderSide(
+              color: selected
+                  ? AppColors.primary
+                  : AppColors.outline.withValues(alpha: 0.24),
+            ),
+          );
+        }).toList(),
       ),
     );
   }
@@ -554,10 +675,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 icon: const Icon(Icons.upload_file),
                 label: const Text('Upload CSV'),
               ),
-              ..._demoDatasets.entries.map(
-                (entry) => OutlinedButton(
-                  onPressed: _busy ? null : () => _loadDemo(entry.key),
-                  child: Text(entry.value),
+              ..._demoDatasets.map(
+                (demo) => OutlinedButton.icon(
+                  onPressed: _busy || !demo.available
+                      ? null
+                      : () => _loadDemo(demo.id),
+                  icon: Icon(
+                    demo.available
+                        ? Icons.dataset_outlined
+                        : Icons.cloud_off_outlined,
+                  ),
+                  label: Text(demo.name),
                 ),
               ),
             ],
@@ -805,41 +933,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
             SizedBox(
               width: compact ? double.infinity : 300,
               child: DropdownButtonFormField<String>(
-                initialValue: _policyId,
+                initialValue:
+                    _hasOption(_policyOptions, _policyId) ? _policyId : null,
                 decoration:
                     const InputDecoration(labelText: 'Governance policy'),
-                items: _policyOptions.entries
+                items: _policyOptions
                     .map(
-                      (entry) => DropdownMenuItem(
-                        value: entry.key,
-                        child: Text(entry.value),
+                      (option) => DropdownMenuItem(
+                        value: option.id,
+                        child: Text(option.label),
                       ),
                     )
                     .toList(),
                 onChanged: _busy
                     ? null
                     : (value) => setState(
-                          () => _policyId = value ?? 'default_governance_v1',
+                          () => _policyId = value ?? _policyOptions.first.id,
                         ),
               ),
             ),
             SizedBox(
               width: compact ? double.infinity : 300,
               child: DropdownButtonFormField<String>(
-                initialValue: _reportTemplate,
+                initialValue: _hasOption(
+                  _reportTemplateOptions,
+                  _reportTemplate,
+                )
+                    ? _reportTemplate
+                    : null,
                 decoration: const InputDecoration(labelText: 'Report template'),
-                items: _reportTemplateOptions.entries
+                items: _reportTemplateOptions
                     .map(
-                      (entry) => DropdownMenuItem(
-                        value: entry.key,
-                        child: Text(entry.value),
+                      (option) => DropdownMenuItem(
+                        value: option.id,
+                        child: Text(option.label),
                       ),
                     )
                     .toList(),
                 onChanged: _busy
                     ? null
                     : (value) => setState(
-                        () => _reportTemplate = value ?? 'full_report'),
+                          () => _reportTemplate =
+                              value ?? _reportTemplateOptions.first.id,
+                        ),
               ),
             ),
             SizedBox(
@@ -892,6 +1028,114 @@ class _DashboardScreenState extends State<DashboardScreen> {
           }).toList(),
         ),
       ],
+    );
+  }
+
+  Widget _buildRunOverviewSection() {
+    final result = _auditResult ?? _preAuditResult;
+    final dataset = _readMap(result?['dataset']);
+    final cleaning = _readMap(result?['cleaning']);
+    final missingActions = _readList(cleaning['missing_value_actions'])
+        .map(_readMap)
+        .where((row) => row.isNotEmpty)
+        .toList();
+    final outcomeMapping = _readMap(cleaning['outcome_mapping']);
+
+    return SurfacePanel(
+      accentColor: AppColors.primary,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionHeader(
+            title: 'Run overview',
+            subtitle:
+                'Dataset profile, cleaning decisions, policy context, and deployment status.',
+          ),
+          const SizedBox(height: 16),
+          if (result == null)
+            const EmptyState(message: 'Run a pre-audit or full audit.')
+          else ...[
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                MetricTile(
+                  label: 'Rows',
+                  value: _readString(dataset['rows'], fallback: '-'),
+                  detail: _readString(
+                    dataset['source_name'],
+                    fallback: _dataset?.name ?? 'Dataset',
+                  ),
+                ),
+                MetricTile(
+                  label: 'Columns',
+                  value: _readString(dataset['columns'], fallback: '-'),
+                  detail: 'After source profiling',
+                ),
+                MetricTile(
+                  label: 'Dropped rows',
+                  value: _readString(
+                    cleaning['dropped_rows_missing_outcome'],
+                    fallback: '0',
+                  ),
+                  detail: 'Missing outcome rows',
+                ),
+                MetricTile(
+                  label: 'Decision',
+                  value: _readString(
+                    result['deployment_decision'],
+                    fallback: 'Pre-audit only',
+                  ),
+                  color: _severityColor(
+                    _readString(result['severity'], fallback: 'Pending'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            _dynamicTable(
+              title: 'Cleaning log',
+              rows: [
+                {
+                  'field': 'Governance policy',
+                  'value': _readString(
+                    dataset['policy_name'],
+                    fallback: _policyLabel(_policyId),
+                  ),
+                },
+                {
+                  'field': 'Dropped columns over 50% missing',
+                  'value': _readList(
+                    cleaning['dropped_columns_over_50_percent_missing'],
+                  ).join(', '),
+                },
+                {
+                  'field': 'Outcome mapping',
+                  'value': outcomeMapping.isEmpty
+                      ? '-'
+                      : outcomeMapping.entries
+                          .map((entry) => '${entry.key}: ${entry.value}')
+                          .join(', '),
+                },
+                {
+                  'field': 'Rows after cleaning',
+                  'value': _readString(
+                    cleaning['rows_after_cleaning'],
+                    fallback: '-',
+                  ),
+                },
+                ...missingActions.map((action) => {
+                      'field': action['column'],
+                      'value':
+                          '${action['missing_count'] ?? 0} missing values, ${action['action'] ?? 'handled'}',
+                    }),
+              ],
+              empty: 'No cleaning actions returned.',
+              preferredColumns: const ['field', 'value'],
+            ),
+          ],
+        ],
+      ),
     );
   }
 
@@ -957,6 +1201,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ],
             ),
             const SizedBox(height: 16),
+            _barList(
+              title: 'Positive rate by group',
+              data: representation.map((row) {
+                return _BarDatum(
+                  label:
+                      '${_readString(row['protected_attribute'], fallback: 'Attribute')}: ${_readString(row['group'], fallback: 'Group')}',
+                  value: _readDouble(row['positive_rate']),
+                  color: _statusColor(_readString(row['status'], fallback: '')),
+                  trailing: _percent(row['positive_rate']),
+                );
+              }).toList(),
+              maxValue: 1,
+              empty: 'No representation chart data returned.',
+            ),
+            const SizedBox(height: 16),
             _dynamicTable(
               title: 'Proxy variables',
               rows: proxies,
@@ -979,12 +1238,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final result = _auditResult;
     final model = _readMap(result?['model']);
     final performance = _readMap(model['performance']);
-    final conditionalFairness = _readMap(model['conditional_fairness']);
-    final intersectionalBias = _readMap(model['intersectional_bias']);
     final fairness = _readList(model['bias_metrics']);
-    final comparison = _readList(model['model_comparison']);
-    final conditional = _readList(conditionalFairness['results']);
-    final intersectional = _readList(intersectionalBias['groups']);
     final accuracy = _readString(performance['accuracy'], fallback: '0');
     final precision = _readString(performance['precision'], fallback: '0');
     final recall = _readString(performance['recall'], fallback: '0');
@@ -995,8 +1249,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SectionHeader(
-            title: 'Post-model audit',
-            subtitle: 'Decision checks after model predictions are produced.',
+            title: 'Bias scorecard',
+            subtitle:
+                'Model performance and fairness gaps across protected groups.',
           ),
           const SizedBox(height: 16),
           if (result == null)
@@ -1021,6 +1276,41 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ],
             ),
             const SizedBox(height: 16),
+            _barList(
+              title: 'Fairness gaps per attribute',
+              data: fairness.expand((entry) {
+                final metric = _readMap(entry);
+                final attribute =
+                    _readString(metric['protected_attribute'], fallback: '');
+                return [
+                  _BarDatum(
+                    label: '$attribute DP gap',
+                    value: _readDouble(metric['demographic_parity_difference']),
+                    color: AppColors.error,
+                    trailing: _formatNumber(
+                      metric['demographic_parity_difference'],
+                    ),
+                  ),
+                  _BarDatum(
+                    label: '$attribute EO gap',
+                    value: _readDouble(metric['equalized_odds_difference']),
+                    color: AppColors.warning,
+                    trailing:
+                        _formatNumber(metric['equalized_odds_difference']),
+                  ),
+                  _BarDatum(
+                    label: '$attribute |1-DI|',
+                    value: (1 - _readDouble(metric['disparate_impact_ratio']))
+                        .abs(),
+                    color: AppColors.primary,
+                    trailing: _formatNumber(metric['disparate_impact_ratio']),
+                  ),
+                ];
+              }).toList(),
+              maxValue: 1,
+              empty: 'No fairness chart data returned.',
+            ),
+            const SizedBox(height: 16),
             _dynamicTable(
               title: 'Fairness scorecard',
               rows: fairness,
@@ -1033,25 +1323,204 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 'status',
               ],
             ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModelComparisonSection() {
+    final model = _readMap(_auditResult?['model']);
+    final tuning = _readMap(model['tuning']);
+    final modelInput = _readMap(model['model_input']);
+    final predictionValidation = _readMap(model['prediction_validation']);
+    final comparison = _readList(model['model_comparison']);
+    final validationRows = <Map<String, dynamic>>[
+      {
+        'check': 'Binary predictions',
+        'status': _readString(predictionValidation['status'], fallback: 'Pass'),
+        'details':
+            'Unique values: ${_readList(predictionValidation['unique_values']).join(', ')}',
+      },
+      if (_readMap(predictionValidation['mapping']).isNotEmpty)
+        {
+          'check': 'Prediction mapping',
+          'status': 'Info',
+          'details': _formatCell(predictionValidation['mapping']),
+        },
+      ..._readList(predictionValidation['warnings']).map((warning) => {
+            'check': 'Warning',
+            'status': 'Warn',
+            'details': warning,
+          }),
+      ..._readList(modelInput['warnings']).map((warning) => {
+            'check': 'Model input warning',
+            'status': 'Warn',
+            'details': warning,
+          }),
+    ];
+
+    return SurfacePanel(
+      accentColor: AppColors.primary,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionHeader(
+            title: 'Model comparison',
+            subtitle:
+                'Tuned candidate ranking, selected model evidence, and prediction validation.',
+          ),
+          const SizedBox(height: 16),
+          if (_auditResult == null)
+            const EmptyState(message: 'Run a full audit.')
+          else ...[
+            Text(
+              '${_readString(model['model_type'], fallback: 'Model')} using ${_readString(modelInput['strategy'], fallback: 'unknown input strategy')}. '
+              '${_readString(tuning['status'], fallback: '')}',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(color: AppColors.muted),
+            ),
+            const SizedBox(height: 16),
+            _barList(
+              title: 'Audit selection scores',
+              data: comparison.map((entry) {
+                final row = _readMap(entry);
+                return _BarDatum(
+                  label: _readString(row['model'], fallback: 'Model'),
+                  value: _readDouble(row['audit_selection_score']),
+                  color: row['selected'] == true
+                      ? AppColors.success
+                      : AppColors.primary,
+                  trailing: _formatNumber(row['audit_selection_score']),
+                );
+              }).toList(),
+              empty: 'No model comparison chart data returned.',
+            ),
             const SizedBox(height: 16),
             _dynamicTable(
-              title: 'Model comparison',
+              title: 'Tuned model comparison',
               rows: comparison,
               empty: 'Run compare-all to populate model comparison.',
               preferredColumns: const [
+                'selected',
                 'model',
+                'status',
+                'cv_score',
                 'balanced_accuracy',
                 'accuracy',
+                'precision',
+                'recall',
                 'max_demographic_parity_difference',
                 'max_equalized_odds_difference',
                 'audit_selection_score',
+                'fails_policy',
+                'policy_failures',
+                'best_params',
               ],
             ),
             const SizedBox(height: 16),
             _dynamicTable(
-              title: 'Conditional fairness',
+              title: 'Prediction validation',
+              rows: validationRows,
+              empty: 'No prediction validation returned.',
+              preferredColumns: const ['check', 'status', 'details'],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTraceSection() {
+    final result = _auditResult;
+    final model = _readMap(_auditResult?['model']);
+    final trace = _readMap(model['audit_trace']);
+    final governance = _readMap(result?['governance']);
+    final conditionalFairness = _readMap(model['conditional_fairness']);
+    final intersectionalBias = _readMap(model['intersectional_bias']);
+    final conditional = _readList(conditionalFairness['results']);
+    final intersectional = _readList(intersectionalBias['groups']);
+    final records = _readList(trace['records']);
+    return SurfacePanel(
+      accentColor: AppColors.warning,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SectionHeader(
+            title: 'Decision traces',
+            subtitle: _readString(
+              trace['method_description'],
+              fallback:
+                  'Governance assessment, same-background checks, intersectional groups, and row-level decision trace.',
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (result == null)
+            const EmptyState(message: 'Run a full audit.')
+          else ...[
+            _dynamicTable(
+              title: 'Governance decision',
+              rows: [
+                {
+                  'field': 'Risk score',
+                  'value': _formatNumber(governance['risk_score']),
+                },
+                {
+                  'field': 'Severity',
+                  'value': _readString(governance['severity'], fallback: '-'),
+                },
+                {
+                  'field': 'Deployment decision',
+                  'value': _readString(
+                    governance['deployment_decision'],
+                    fallback: '-',
+                  ),
+                },
+                {
+                  'field': 'Policy',
+                  'value':
+                      '${_readString(governance['policy_name'], fallback: '')} ${_readString(governance['policy_version'], fallback: '')}',
+                },
+                ..._readList(governance['top_risk_drivers']).map((driver) => {
+                      'field': 'Risk driver',
+                      'value': driver,
+                    }),
+              ],
+              empty: 'No governance decision returned.',
+              preferredColumns: const ['field', 'value'],
+            ),
+            const SizedBox(height: 16),
+            _dynamicTable(
+              title: 'Grouping preview',
+              rows: _readList(
+                result['grouping_preview'] ??
+                    _readMap(result['pre_audit'])['grouping_preview'],
+              ),
+              empty: 'No grouping preview returned.',
+              preferredColumns: const [
+                'column',
+                'detected_type',
+                'grouping_method',
+                'groups',
+              ],
+            ),
+            const SizedBox(height: 16),
+            _dynamicTable(
+              title: 'Run traceability',
+              rows: _traceabilityRows(_readMap(result['traceability'])),
+              empty: 'No traceability metadata returned.',
+              preferredColumns: const ['field', 'value'],
+            ),
+            const SizedBox(height: 16),
+            _dynamicTable(
+              title: 'Same-background fairness',
               rows: conditional,
-              empty: 'No matched-background disparities returned.',
+              empty: _readString(
+                conditionalFairness['reason'],
+                fallback: 'No matched-background disparities returned.',
+              ),
               preferredColumns: const [
                 'protected_attribute',
                 'control_features',
@@ -1065,10 +1534,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _dynamicTable(
               title: 'Intersectional groups',
               rows: intersectional,
-              empty: 'No intersectional group results returned.',
+              empty: _readString(
+                intersectionalBias['reason'],
+                fallback: 'No intersectional group results returned.',
+              ),
               preferredColumns: const [
                 'group',
                 'count',
+                'positive_predictions',
                 'selection_rate',
                 'accuracy',
                 'ratio_to_highest',
@@ -1076,32 +1549,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 'small_group_warning',
               ],
             ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTraceSection() {
-    final model = _readMap(_auditResult?['model']);
-    final trace = _readMap(model['audit_trace']);
-    final records = _readList(trace['records']);
-    return SurfacePanel(
-      accentColor: AppColors.warning,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SectionHeader(
-            title: 'Audit trace',
-            subtitle: _readString(
-              trace['method_description'],
-              fallback: 'Row-level decision trace for risky outcomes.',
-            ),
-          ),
-          const SizedBox(height: 16),
-          if (_auditResult == null)
-            const EmptyState(message: 'Run a full audit.')
-          else
+            const SizedBox(height: 16),
+            _traceCards(records, trace),
+            const SizedBox(height: 16),
             _dynamicTable(
               title: 'Risky decisions',
               rows: records,
@@ -1115,6 +1565,112 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 'top_contributions',
               ],
             ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFeatureAuditSection() {
+    final model = _readMap(_auditResult?['model']);
+    final importances = _readList(model['feature_importance']);
+    final biasSources = _readList(model['bias_sources']);
+    final simulation = _readMap(model['improvement_simulation']);
+    final available = simulation['available'] == true;
+
+    return SurfacePanel(
+      accentColor: AppColors.success,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionHeader(
+            title: 'Features',
+            subtitle:
+                'Feature importance, proxy-linked bias sources, and mitigation simulation.',
+          ),
+          const SizedBox(height: 16),
+          if (_auditResult == null)
+            const EmptyState(message: 'Run a full audit.')
+          else ...[
+            _barList(
+              title: 'Feature importance',
+              data: importances.map((entry) {
+                final row = _readMap(entry);
+                return _BarDatum(
+                  label:
+                      '${_readString(row['rank'], fallback: '-')}. ${_readString(row['feature'], fallback: 'Feature')}',
+                  value: _readDouble(row['normalized_importance']),
+                  color: AppColors.primary,
+                  trailing: _formatNumber(row['importance']),
+                );
+              }).toList(),
+              empty: 'Feature importance is not available for this model.',
+            ),
+            const SizedBox(height: 16),
+            _dynamicTable(
+              title: 'Bias sources',
+              rows: biasSources,
+              empty: 'No top feature/proxy overlaps returned.',
+              preferredColumns: const ['feature', 'rank', 'proxy_links'],
+            ),
+            const SizedBox(height: 16),
+            Text('Mitigation simulation',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            if (simulation.isEmpty)
+              const EmptyState(message: 'No simulation data returned.')
+            else if (!available)
+              EmptyState(
+                message: _readString(
+                  simulation['reason'] ?? simulation['recommended_next_step'],
+                  fallback: 'Simulation is unavailable.',
+                ),
+              )
+            else ...[
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  MetricTile(
+                    label: 'Accuracy',
+                    value: _percent(simulation['accuracy']),
+                  ),
+                  MetricTile(
+                    label: 'Max DP',
+                    value: _formatNumber(
+                      simulation['max_demographic_parity_difference'],
+                    ),
+                  ),
+                  MetricTile(
+                    label: 'Max EO',
+                    value: _formatNumber(
+                      simulation['max_equalized_odds_difference'],
+                    ),
+                  ),
+                  MetricTile(
+                    label: 'Dropped',
+                    value: _readList(simulation['dropped_features'])
+                        .length
+                        .toString(),
+                    detail:
+                        _readList(simulation['dropped_features']).join(', '),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                _readString(
+                  simulation['note'],
+                  fallback:
+                      'Diagnostic simulation only; rerun governance before deployment.',
+                ),
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(color: AppColors.muted),
+              ),
+            ],
+          ],
         ],
       ),
     );
@@ -1124,6 +1680,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final report = _readMap(_auditResult?['report']);
     final reportId = _readString(_auditResult?['report_id'], fallback: '');
     final text = _readString(report['text'], fallback: '');
+    final sections = _readList(report['sections']).map(_readMap).toList();
     final source = _readString(report['source'], fallback: 'Gemini analysis');
     return SurfacePanel(
       accentColor: AppColors.success,
@@ -1131,7 +1688,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SectionHeader(
-            title: 'Gemini analysis',
+            title: 'Analysis report',
             subtitle: source,
             trailing: reportId.isEmpty
                 ? null
@@ -1144,6 +1701,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const SizedBox(height: 16),
           if (_auditResult == null)
             const EmptyState(message: 'Run a full audit.')
+          else if (sections.isNotEmpty)
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: sections.map((section) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _readString(section['title'], fallback: 'Section'),
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 6),
+                      SelectableText(
+                        _readString(section['content'], fallback: ''),
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+            )
           else
             SelectableText(
               text.isEmpty ? 'No report text returned.' : text,
@@ -1151,6 +1731,154 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
         ],
       ),
+    );
+  }
+
+  Widget _barList({
+    required String title,
+    required List<_BarDatum> data,
+    String empty = 'No chart data returned.',
+    double? maxValue,
+  }) {
+    final rows = data.where((row) => row.label.trim().isNotEmpty).toList();
+    if (rows.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          EmptyState(message: empty),
+        ],
+      );
+    }
+
+    final max = maxValue ??
+        rows.map((row) => row.value).fold<double>(
+              0,
+              (previous, value) => value > previous ? value : previous,
+            );
+    final effectiveMax = max <= 0 ? 1 : max;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 10),
+        ...rows.take(14).map((row) {
+          final widthFactor =
+              (row.value / effectiveMax).clamp(0.02, 1.0).toDouble();
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        row.label,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      row.trailing,
+                      style: Theme.of(context)
+                          .textTheme
+                          .labelMedium
+                          ?.copyWith(color: AppColors.text),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 5),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: LinearProgressIndicator(
+                    value: widthFactor,
+                    minHeight: 10,
+                    backgroundColor: AppColors.surfaceHigh,
+                    valueColor: AlwaysStoppedAnimation<Color>(row.color),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _traceCards(List<Object?> records, Map<String, dynamic> trace) {
+    final mappedRecords =
+        records.map(_readMap).where((row) => row.isNotEmpty).take(6).toList();
+    if (mappedRecords.isEmpty) {
+      return EmptyState(
+        message: _readString(
+          trace['reason'],
+          fallback: 'No row-level audit trace records were generated.',
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Decision audit trace',
+            style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        ...mappedRecords.map((record) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: SurfacePanel(
+              padding: const EdgeInsets.all(14),
+              backgroundColor: AppColors.surfaceLow,
+              accentColor: AppColors.warning,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Row ${_readString(record['row_id'], fallback: '-')}',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                      ),
+                      StatusPill(
+                        label:
+                            'Score ${_formatNumber(record['decision_score'])}',
+                        color: AppColors.warning,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Prediction ${_formatCell(record['prediction'])}, actual ${_formatCell(record['actual'])}. ${_readString(record['risk_reason'], fallback: '')}',
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodyMedium
+                        ?.copyWith(color: AppColors.muted),
+                  ),
+                  const SizedBox(height: 10),
+                  _dynamicTable(
+                    title: 'Top contributors',
+                    rows: _readList(record['top_contributions']),
+                    empty: 'No contributor details returned.',
+                    preferredColumns: const [
+                      'feature',
+                      'value',
+                      'baseline',
+                      'contribution',
+                      'direction',
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        }),
+      ],
     );
   }
 
@@ -1177,7 +1905,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ...preferredColumns
           .where((column) => mappedRows.any((row) => row.containsKey(column))),
       ...mappedRows.expand((row) => row.keys),
-    }.take(8).toList();
+    }.take(12).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1224,6 +1952,113 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  List<Map<String, dynamic>> _traceabilityRows(
+      Map<String, dynamic> traceability) {
+    return [
+      {'field': 'Run ID', 'value': traceability['run_id']},
+      {'field': 'Created UTC', 'value': traceability['created_at_utc']},
+      {
+        'field': 'Dataset hash',
+        'value': traceability['dataset_hash_sha256'],
+      },
+      {
+        'field': 'Model fingerprint',
+        'value': traceability['model_fingerprint_sha256'],
+      },
+      {'field': 'Policy', 'value': _formatCell(traceability['policy'])},
+      {'field': 'User ID', 'value': traceability['user_id']},
+      {'field': 'Persistence', 'value': traceability['persistence_mode']},
+    ].where((row) {
+      final value = row['value'];
+      return value != null && value.toString().trim().isNotEmpty;
+    }).toList();
+  }
+
+  String? _demoLabel(String demoId) {
+    for (final demo in _demoDatasets) {
+      if (demo.id == demoId) return demo.name;
+    }
+    return null;
+  }
+
+  String _policyLabel(String policyId) {
+    for (final option in _policyOptions) {
+      if (option.id == policyId) return option.label;
+    }
+    return policyId;
+  }
+
+  Future<void> _loadBackendCatalog() async {
+    try {
+      final demos = await widget.backendClient.listDemos();
+      final config = await widget.backendClient.fetchGovernanceConfig();
+      if (!mounted) return;
+      setState(() {
+        final loadedDemos = demos.where((demo) => demo.id.isNotEmpty).toList();
+        if (loadedDemos.isNotEmpty) {
+          _demoDatasets = loadedDemos;
+        }
+        final loadedPolicies =
+            config.policies.where((option) => option.id.isNotEmpty).toList();
+        if (loadedPolicies.isNotEmpty) {
+          _policyOptions = loadedPolicies;
+          if (!_hasOption(_policyOptions, _policyId)) {
+            _policyId = _policyOptions.first.id;
+          }
+        }
+        final loadedTemplates = config.reportTemplates
+            .where((option) => option.id.isNotEmpty)
+            .toList();
+        if (loadedTemplates.isNotEmpty) {
+          _reportTemplateOptions = loadedTemplates;
+          if (!_hasOption(_reportTemplateOptions, _reportTemplate)) {
+            _reportTemplate = _reportTemplateOptions.first.id;
+          }
+        }
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _statusMessage =
+            'Using bundled demo and policy metadata. Backend catalog request failed: $error';
+      });
+    }
+  }
+
+  Future<void> _signInWithGoogle() async {
+    setState(() {
+      _busy = true;
+      _errorMessage = null;
+      _statusMessage = 'Opening Google sign-in...';
+    });
+    try {
+      await widget.auditRepository.signInWithGoogle();
+      if (mounted) {
+        setState(() {
+          _guestMode = true;
+          _statusMessage = 'Signed in. Future audits will save to Firestore.';
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _errorMessage = error.toString());
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
+  void _continueAsGuest() {
+    setState(() {
+      _guestMode = true;
+      _errorMessage = null;
+      _statusMessage =
+          'Guest mode enabled. Sign in later to save audit history to Firestore.';
+    });
+  }
+
   Future<void> _pickCsv() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
@@ -1239,7 +2074,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _loadDemo(String demoId) async {
-    await _guarded('Loading ${_demoDatasets[demoId]}...', () async {
+    final demoName = _demoLabel(demoId);
+    await _guarded('Loading ${demoName ?? 'demo dataset'}...', () async {
       final dataset = await widget.backendClient.loadDemo(demoId);
       _applyDataset(dataset);
     });
@@ -1286,6 +2122,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _preAuditResult = result;
         _auditResult = null;
         _selectedPage = _AuditPage.results;
+        _selectedResultTab = _ResultTab.preAudit;
         _statusMessage = 'Pre-audit completed.';
       });
     });
@@ -1312,6 +2149,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _auditResult = result;
         _preAuditResult = result;
         _selectedPage = _AuditPage.results;
+        _selectedResultTab = _ResultTab.overview;
         _statusMessage = widget.auditRepository.currentUser != null
             ? 'Full audit completed and saved to Firebase.'
             : 'Full audit completed. Firebase history is not enabled.';
@@ -1403,10 +2241,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _modelType = _modelOptions.containsKey(defaultModel)
           ? defaultModel
           : 'compare_all';
-      _policyId = _policyOptions.containsKey(defaultPolicy)
+      _policyId = _hasOption(_policyOptions, defaultPolicy)
           ? defaultPolicy
-          : 'default_governance_v1';
-      _reportTemplate = 'full_report';
+          : _policyOptions.first.id;
+      _reportTemplate = _hasOption(_reportTemplateOptions, 'full_report')
+          ? 'full_report'
+          : _reportTemplateOptions.first.id;
       _modelSelectionPriority = 0.55;
       _auditMode = 'train';
       _uploadedModel = null;
@@ -1418,6 +2258,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _preAuditResult = null;
       _auditResult = null;
       _selectedPage = _AuditPage.workspace;
+      _selectedResultTab = _ResultTab.overview;
       _statusMessage = '${dataset.name} loaded.';
       _errorMessage = null;
     });
@@ -1433,8 +2274,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _outcomeColumn = null;
       _auditMode = 'train';
       _modelType = 'compare_all';
-      _policyId = 'default_governance_v1';
-      _reportTemplate = 'full_report';
+      _policyId = _hasOption(_policyOptions, 'default_governance_v1')
+          ? 'default_governance_v1'
+          : _policyOptions.first.id;
+      _reportTemplate = _hasOption(_reportTemplateOptions, 'full_report')
+          ? 'full_report'
+          : _reportTemplateOptions.first.id;
       _modelSelectionPriority = 0.55;
       _predictionColumnController.clear();
       _scoreColumnController.clear();
@@ -1446,6 +2291,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _preAuditResult = null;
       _auditResult = null;
       _selectedPage = _AuditPage.workspace;
+      _selectedResultTab = _ResultTab.overview;
     });
   }
 
@@ -1474,6 +2320,7 @@ class _AuditNavigationRail extends StatelessWidget {
     required this.selectedPage,
     required this.onSelect,
     required this.onNewAudit,
+    required this.onSignIn,
   });
 
   final AuditRepository repository;
@@ -1481,6 +2328,7 @@ class _AuditNavigationRail extends StatelessWidget {
   final _AuditPage selectedPage;
   final ValueChanged<_AuditPage> onSelect;
   final VoidCallback onNewAudit;
+  final VoidCallback onSignIn;
 
   @override
   Widget build(BuildContext context) {
@@ -1579,15 +2427,33 @@ class _AuditNavigationRail extends StatelessWidget {
     return SurfacePanel(
       padding: const EdgeInsets.all(14),
       backgroundColor: AppColors.surface,
-      accentColor: AppColors.error,
-      child: Text(
-        repository.enabled
-            ? 'Sign in to save audit history.'
-            : repository.disabledReason,
-        style: Theme.of(context)
-            .textTheme
-            .bodyMedium
-            ?.copyWith(color: AppColors.muted),
+      accentColor: repository.enabled ? AppColors.warning : AppColors.error,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          StatusPill(
+            label: 'Guest session',
+            color: repository.enabled ? AppColors.warning : AppColors.error,
+          ),
+          const SizedBox(height: 10),
+          Text(
+            repository.enabled
+                ? 'Sign in to save audit history.'
+                : repository.disabledReason,
+            style: Theme.of(context)
+                .textTheme
+                .bodyMedium
+                ?.copyWith(color: AppColors.muted),
+          ),
+          if (repository.enabled) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: onSignIn,
+              icon: const Icon(Icons.login),
+              label: const Text('Sign in'),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -1840,6 +2706,20 @@ class _HistoryReview extends StatelessWidget {
   }
 }
 
+class _BarDatum {
+  const _BarDatum({
+    required this.label,
+    required this.value,
+    required this.color,
+    required this.trailing,
+  });
+
+  final String label;
+  final double value;
+  final Color color;
+  final String trailing;
+}
+
 StatusPill _severityPill(String severity) {
   final normalized = severity.trim().isEmpty ? 'Pending' : severity;
   return StatusPill(
@@ -1861,6 +2741,30 @@ Color _severityColor(String severity) {
     default:
       return AppColors.primary;
   }
+}
+
+Color _statusColor(String status) {
+  switch (status.toLowerCase()) {
+    case 'red':
+    case 'critical':
+    case 'high':
+    case 'fail':
+      return AppColors.error;
+    case 'yellow':
+    case 'medium':
+    case 'warn':
+      return AppColors.warning;
+    case 'green':
+    case 'low':
+    case 'pass':
+      return AppColors.success;
+    default:
+      return AppColors.primary;
+  }
+}
+
+bool _hasOption(List<OptionItem> options, String id) {
+  return options.any((option) => option.id == id);
 }
 
 Map<String, dynamic> _readMap(Object? value) {
@@ -1922,6 +2826,18 @@ String _formatCell(Object? value) {
         .join(', ');
   }
   return value.toString();
+}
+
+double _readDouble(Object? value) {
+  if (value is num) return value.toDouble();
+  return double.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+String _formatNumber(Object? value) {
+  if (value is num) return value.toStringAsFixed(value.abs() >= 10 ? 1 : 3);
+  final parsed = double.tryParse(value?.toString() ?? '');
+  if (parsed == null) return '-';
+  return parsed.toStringAsFixed(parsed.abs() >= 10 ? 1 : 3);
 }
 
 String _percent(Object? value) {

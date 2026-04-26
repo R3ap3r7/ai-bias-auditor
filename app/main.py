@@ -9,11 +9,9 @@ from typing import Any
 import joblib
 import pandas as pd
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from app.audit import AuditError, profile_dataframe, run_audit, run_pre_audit_only
@@ -48,8 +46,6 @@ if cors_origins:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
-templates = Jinja2Templates(directory="app/templates")
 
 SESSIONS: dict[str, dict[str, Any]] = {}
 MODELS: dict[str, dict[str, Any]] = {}
@@ -87,17 +83,17 @@ def frontend_url(path: str = "") -> str:
 
 
 @app.get("/")
-async def index(request: Request) -> RedirectResponse:
+async def index() -> RedirectResponse:
     return RedirectResponse(frontend_url())
 
 
 @app.get("/audit")
-async def audit_page(request: Request) -> RedirectResponse:
+async def audit_page() -> RedirectResponse:
     return RedirectResponse(frontend_url())
 
 
 @app.get("/history")
-async def history_page(request: Request) -> RedirectResponse:
+async def history_page() -> RedirectResponse:
     return RedirectResponse(frontend_url())
 
 
@@ -122,22 +118,6 @@ async def policies() -> dict[str, Any]:
         "policies": list_policies(),
         "report_templates": list_report_templates(),
         "storage": STORE.storage_status(),
-    }
-
-
-@app.get("/api/firebase-config")
-async def firebase_config() -> dict[str, Any]:
-    config = {
-        "apiKey": os.getenv("FIREBASE_API_KEY", ""),
-        "authDomain": os.getenv("FIREBASE_AUTH_DOMAIN", ""),
-        "projectId": os.getenv("FIREBASE_PROJECT_ID", ""),
-        "storageBucket": os.getenv("FIREBASE_STORAGE_BUCKET", ""),
-        "messagingSenderId": os.getenv("FIREBASE_MESSAGING_SENDER_ID", ""),
-        "appId": os.getenv("FIREBASE_APP_ID", ""),
-    }
-    return {
-        "enabled": all(config.values()),
-        "config": config,
     }
 
 

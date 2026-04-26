@@ -32,12 +32,17 @@ class AuditRepository {
       await Firebase.initializeApp(
           options: DefaultFirebaseOptions.currentPlatform);
       final auth = FirebaseAuth.instance;
-      return AuditRepository._(
+      final repository = AuditRepository._(
         enabled: true,
         disabledReason: '',
         firestore: FirebaseFirestore.instance,
         auth: auth,
       );
+      await repository._completeRedirectSignIn();
+      if (auth.currentUser != null) {
+        await repository._upsertUserProfile(auth.currentUser!);
+      }
+      return repository;
     } catch (error) {
       return AuditRepository._(
         enabled: false,
@@ -94,7 +99,7 @@ class AuditRepository {
         rethrow;
       }
       await auth!.signInWithRedirect(provider);
-      credential = await auth!.getRedirectResult();
+      return;
     }
     final user = credential.user;
     if (user != null) {
@@ -133,12 +138,14 @@ class AuditRepository {
     final trace = _readMap(model['audit_trace']);
     final records = _readList(trace['records']).take(20).toList();
     final batch = firestore!.batch();
+    var traceWrites = 0;
     for (final entry in records) {
       final recordMap = _readMap(entry);
       if (recordMap.isEmpty) continue;
       final rowId = recordMap['row_id']?.toString() ??
           'trace-${DateTime.now().microsecondsSinceEpoch}';
-      batch.set(auditRef.collection('traceRecords').doc(rowId), {
+      batch.set(
+          auditRef.collection('traceRecords').doc(_firestoreDocId(rowId)), {
         'createdAt': Timestamp.now(),
         'rowId': rowId,
         'prediction': recordMap['prediction'],
@@ -149,8 +156,24 @@ class AuditRepository {
         'topContributors':
             recordMap['top_contributions'] ?? recordMap['top_contributors'],
       });
+      traceWrites += 1;
     }
-    await batch.commit();
+    if (traceWrites > 0) {
+      await batch.commit();
+    }
+  }
+
+  Future<void> _completeRedirectSignIn() async {
+    if (!enabled || auth == null) return;
+    try {
+      final credential = await auth!.getRedirectResult();
+      final user = credential.user ?? auth!.currentUser;
+      if (user != null) {
+        await _upsertUserProfile(user);
+      }
+    } on FirebaseAuthException {
+      // The interactive sign-in surface reports actionable errors to the user.
+    }
   }
 
   Future<void> _upsertUserProfile(User user) async {
@@ -172,6 +195,17 @@ class AuditRepository {
     }
     await userRef.set(data, SetOptions(merge: true));
   }
+}
+
+String _firestoreDocId(String value) {
+  final sanitized = value
+      .trim()
+      .replaceAll(RegExp(r'[/#?\[\]*]'), '_')
+      .replaceAll(RegExp(r'\s+'), '_');
+  if (sanitized.isEmpty) {
+    return 'trace-${DateTime.now().microsecondsSinceEpoch}';
+  }
+  return sanitized.length <= 120 ? sanitized : sanitized.substring(0, 120);
 }
 
 Map<String, dynamic> _sanitizeResultForFirestore(Map<String, dynamic> result) {

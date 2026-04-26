@@ -6,7 +6,7 @@ This folder is the supported user-facing frontend for AI Bias Auditor. It keeps 
 
 - Flutter web: upload/configuration dashboard and audit results UI.
 - FastAPI backend: CSV ingestion, pre-model audit, model training, prediction CSV audit, advisory Gemini analysis, PDF export.
-- Firebase Auth: Google sign-in for audit ownership.
+- Firebase Auth: Google sign-in for audit ownership, with guest mode for unsaved local runs.
 - Cloud Firestore: user profiles plus user-scoped `users/{uid}/auditRuns`, `users/{uid}/reports`, and `users/{uid}/auditRuns/{auditId}/traceRecords`.
 - Firebase Hosting: serves the Flutter web build.
 
@@ -102,9 +102,9 @@ The Flutter app covers the hackathon governance flow:
 - Choose policy, report template, model-selection priority, and same-background controls
 - Train a tuned model family or upload a prediction CSV with optional row-id matching and score/probability metadata
 - Run pre-model and full post-model audits separately
-- View model comparison, conditional fairness, row-level audit trace, and Gemini analysis
+- View overview, data pre-audit, bias scorecard, model comparison, governance trace, feature importance, mitigation simulation, and Gemini/local report tabs
 - Download backend-generated PDF reports
-- Sign in with Google
+- Continue as guest or sign in with Google
 - Save user profiles, audit summaries, report JSON, and trace previews to user-scoped Firestore paths
 
-Uploaded pickle/joblib model artifacts are disabled by default in the current UI because prediction CSV mode is safer for third-party model reviews. Gemini summaries are advisory and cannot certify model safety. The legacy FastAPI HTML pages are no longer a separate UI path; FastAPI serves the API and redirects user-facing routes to Flutter through `FRONTEND_URL`.
+Uploaded pickle/joblib model artifacts are disabled by default in the current UI because prediction CSV mode is safer for third-party model reviews. Gemini summaries are advisory and cannot certify model safety. FastAPI serves the API/report backend and redirects user-facing routes to Flutter through `FRONTEND_URL`; Flutter is the only executable frontend.

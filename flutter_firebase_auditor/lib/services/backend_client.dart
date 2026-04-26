@@ -19,6 +19,20 @@ class AuditBackendClient {
   final String apiBaseUrl;
   final http.Client _httpClient;
 
+  Future<List<DemoDatasetInfo>> listDemos() async {
+    final body = await _getJson('/api/demos');
+    final demos = body['demos'];
+    if (demos is! List) return const [];
+    return demos
+        .map((entry) => DemoDatasetInfo.fromJson(_readMap(entry)))
+        .toList();
+  }
+
+  Future<GovernanceConfig> fetchGovernanceConfig() async {
+    final body = await _getJson('/api/policies');
+    return GovernanceConfig.fromJson(body);
+  }
+
   Future<DatasetSession> uploadCsv(PlatformFile file) async {
     final bytes = _requireBytes(file, 'CSV');
     final request = http.MultipartRequest('POST', _uri('/api/upload'))
@@ -104,6 +118,11 @@ class AuditBackendClient {
 
   Uri _uri(String path) => Uri.parse('$apiBaseUrl$path');
 
+  Future<Map<String, dynamic>> _getJson(String path) async {
+    final response = await _httpClient.get(_uri(path));
+    return _decodeResponse(response.statusCode, response.body);
+  }
+
   Future<Map<String, dynamic>> _postJson(
     String path,
     Map<String, dynamic> payload,
@@ -159,6 +178,100 @@ class AuditBackendClient {
     if (trimmed != null && trimmed.isNotEmpty) {
       request.fields[key] = trimmed;
     }
+  }
+}
+
+class DemoDatasetInfo {
+  const DemoDatasetInfo({
+    required this.id,
+    required this.name,
+    required this.available,
+    required this.protectedAttributes,
+    required this.outcomeColumn,
+    required this.modelType,
+  });
+
+  final String id;
+  final String name;
+  final bool available;
+  final List<String> protectedAttributes;
+  final String outcomeColumn;
+  final String modelType;
+
+  factory DemoDatasetInfo.fromJson(Map<String, dynamic> json) {
+    return DemoDatasetInfo(
+      id: json['id']?.toString() ?? '',
+      name: json['name']?.toString() ?? 'Demo dataset',
+      available: json['available'] == true,
+      protectedAttributes: _readStringList(json['protected_attributes']),
+      outcomeColumn: json['outcome_column']?.toString() ?? '',
+      modelType: json['model_type']?.toString() ?? 'compare_all',
+    );
+  }
+}
+
+class GovernanceConfig {
+  const GovernanceConfig({
+    required this.policies,
+    required this.reportTemplates,
+    required this.storage,
+  });
+
+  final List<OptionItem> policies;
+  final List<OptionItem> reportTemplates;
+  final Map<String, dynamic> storage;
+
+  factory GovernanceConfig.fromJson(Map<String, dynamic> json) {
+    final policies = json['policies'];
+    final templates = json['report_templates'];
+    return GovernanceConfig(
+      policies: policies is List
+          ? policies
+              .map((entry) => OptionItem.fromPolicyJson(_readMap(entry)))
+              .toList()
+          : const [],
+      reportTemplates: templates is List
+          ? templates
+              .map((entry) => OptionItem.fromTemplateJson(_readMap(entry)))
+              .toList()
+          : const [],
+      storage: _readMap(json['storage']),
+    );
+  }
+}
+
+class OptionItem {
+  const OptionItem({
+    required this.id,
+    required this.label,
+    this.description = '',
+    this.version,
+  });
+
+  final String id;
+  final String label;
+  final String description;
+  final String? version;
+
+  factory OptionItem.fromPolicyJson(Map<String, dynamic> json) {
+    final version = json['version']?.toString();
+    final name = json['name']?.toString() ?? json['policy_id']?.toString();
+    return OptionItem(
+      id: json['policy_id']?.toString() ?? '',
+      label: version == null || version.isEmpty
+          ? name ?? 'Policy'
+          : '$name ($version)',
+      description: json['description']?.toString() ?? '',
+      version: version,
+    );
+  }
+
+  factory OptionItem.fromTemplateJson(Map<String, dynamic> json) {
+    return OptionItem(
+      id: json['template_id']?.toString() ?? '',
+      label: json['title']?.toString() ?? 'Report template',
+      description: json['description']?.toString() ?? '',
+    );
   }
 }
 
@@ -334,4 +447,9 @@ int _readInt(Object? value) {
   if (value is int) return value;
   if (value is num) return value.toInt();
   return int.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+List<String> _readStringList(Object? value) {
+  if (value is List) return value.map((item) => item.toString()).toList();
+  return const [];
 }
