@@ -6,45 +6,65 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isSelf(userId) {
-      return signedIn() && request.auth.uid == userId;
+    function hasUserProfile() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function ownsDocument() {
+      return signedIn() && request.auth.uid == resource.data.ownerId;
+    }
+
+    function createsOwnedDocument() {
+      return hasUserProfile()
+        && request.auth.uid == request.resource.data.ownerId;
     }
 
     match /users/{userId} {
-      allow create: if isSelf(userId)
+      allow create: if signedIn()
+        && request.auth.uid == userId
         && request.resource.data.uid == userId;
-      allow read: if isSelf(userId);
-      allow update: if isSelf(userId)
+      allow read: if signedIn() && request.auth.uid == userId;
+      allow update: if signedIn()
+        && request.auth.uid == userId
         && request.resource.data.uid == userId;
       allow delete: if false;
 
       match /auditRuns/{auditId} {
-        allow create: if isSelf(userId)
+        allow create: if signedIn()
+          && request.auth.uid == userId
           && request.resource.data.ownerId == userId;
-        allow read, update, delete: if isSelf(userId)
+        allow read, update, delete: if signedIn()
+          && request.auth.uid == userId
           && resource.data.ownerId == userId;
 
         match /traceRecords/{traceId} {
-          allow create, read, update, delete: if isSelf(userId);
+          allow create: if signedIn()
+            && request.auth.uid == userId;
+          allow read, update, delete: if signedIn()
+            && request.auth.uid == userId;
         }
       }
 
       match /reports/{reportId} {
-        allow create: if isSelf(userId)
+        allow create: if signedIn()
+          && request.auth.uid == userId
           && request.resource.data.ownerId == userId;
-        allow read, update, delete: if isSelf(userId)
+        allow read, update, delete: if signedIn()
+          && request.auth.uid == userId
           && resource.data.ownerId == userId;
       }
     }
 
     match /auditRuns/{auditId} {
-      allow create: if signedIn()
-        && request.resource.data.ownerId == request.auth.uid;
-      allow read, update, delete: if signedIn()
-        && resource.data.ownerId == request.auth.uid;
+      allow create: if createsOwnedDocument();
+      allow read, update, delete: if ownsDocument();
 
       match /traceRecords/{traceId} {
-        allow create, read, update, delete: if signedIn()
+        allow create: if signedIn()
+          && exists(/databases/$(database)/documents/auditRuns/$(auditId))
+          && get(/databases/$(database)/documents/auditRuns/$(auditId)).data.ownerId == request.auth.uid;
+        allow read, update, delete: if signedIn()
           && exists(/databases/$(database)/documents/auditRuns/$(auditId))
           && get(/databases/$(database)/documents/auditRuns/$(auditId)).data.ownerId == request.auth.uid;
       }
