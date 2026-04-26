@@ -57,6 +57,8 @@ class AuditRepository {
       }
 
       return firestore!
+          .collection('users')
+          .doc(user.uid)
           .collection('auditRuns')
           .where('ownerId', isEqualTo: user.uid)
           .orderBy('createdAt', descending: true)
@@ -106,8 +108,15 @@ class AuditRepository {
     }
 
     await _upsertUserProfile(user);
-    final auditRef = firestore!.collection('auditRuns').doc(record.id);
+    final userRef = firestore!.collection('users').doc(user.uid);
+    final auditRef = userRef.collection('auditRuns').doc(record.id);
     await auditRef.set(record.toFirestore(user.uid));
+    await userRef.collection('reports').doc(record.id).set({
+      'ownerId': user.uid,
+      'createdAt': Timestamp.now(),
+      'reportId': record.reportId,
+      'result': _sanitizeResultForFirestore(rawResult),
+    });
 
     final model = _readMap(rawResult['model']);
     final trace = _readMap(model['audit_trace']);
@@ -152,6 +161,50 @@ class AuditRepository {
     }
     await userRef.set(data, SetOptions(merge: true));
   }
+}
+
+Map<String, dynamic> _sanitizeResultForFirestore(Map<String, dynamic> result) {
+  final cloned = jsonSafeMap(result);
+  final model = _readMap(cloned['model']);
+  final trace = _readMap(model['audit_trace']);
+  final records = _readList(trace['records']).take(20).map((entry) {
+    final record = _readMap(entry);
+    record.remove('raw_row');
+    return record;
+  }).toList();
+  trace['records'] = records;
+  model['audit_trace'] = trace;
+  cloned['model'] = model;
+  cloned['post_audit'] = model;
+  return cloned;
+}
+
+Map<String, dynamic> jsonSafeMap(Map<String, dynamic> value) {
+  return value.map((key, inner) {
+    if (inner is Map<String, dynamic>) {
+      return MapEntry(key, jsonSafeMap(inner));
+    }
+    if (inner is Map) {
+      return MapEntry(
+        key,
+        jsonSafeMap(inner
+            .map((mapKey, mapValue) => MapEntry(mapKey.toString(), mapValue))),
+      );
+    }
+    if (inner is List) {
+      return MapEntry(
+          key,
+          inner.map((item) {
+            if (item is Map<String, dynamic>) return jsonSafeMap(item);
+            if (item is Map) {
+              return jsonSafeMap(item.map(
+                  (mapKey, mapValue) => MapEntry(mapKey.toString(), mapValue)));
+            }
+            return item;
+          }).toList());
+    }
+    return MapEntry(key, inner);
+  });
 }
 
 Map<String, dynamic> _readMap(Object? value) {

@@ -150,9 +150,9 @@
             <label for="auditModeSelect">Post-Audit Model Source</label>
             <select id="auditModeSelect" class="select" aria-label="Select audit mode">
               <option value="train">Train a model in the auditor</option>
-              <option value="uploaded_model">Use uploaded model</option>
               <option value="prediction_csv">Use prediction CSV</option>
             </select>
+            <p style="font-size:0.75rem;color:#a1a1aa;margin-top:0.35rem;">Uploaded model files are disabled for this release.</p>
           </div>
         </div>
 
@@ -200,6 +200,22 @@
               </label>
               <input id="predictionFile" name="file" type="file" accept=".csv,text/csv"
                      class="input" aria-label="Choose prediction CSV" />
+            </div>
+            <div style="min-width:190px;flex:1;">
+              <label for="predictionColumn" style="display:block;font-size:0.825rem;color:#a1a1aa;margin-bottom:0.5rem;">Prediction Column</label>
+              <input id="predictionColumn" class="input" placeholder="prediction" />
+            </div>
+            <div style="min-width:190px;flex:1;">
+              <label for="scoreColumn" style="display:block;font-size:0.825rem;color:#a1a1aa;margin-bottom:0.5rem;">Score Column</label>
+              <input id="scoreColumn" class="input" placeholder="score / probability" />
+            </div>
+            <div style="min-width:190px;flex:1;">
+              <label for="datasetRowIdColumn" style="display:block;font-size:0.825rem;color:#a1a1aa;margin-bottom:0.5rem;">Dataset Row ID</label>
+              <input id="datasetRowIdColumn" class="input" placeholder="optional" />
+            </div>
+            <div style="min-width:190px;flex:1;">
+              <label for="predictionRowIdColumn" style="display:block;font-size:0.825rem;color:#a1a1aa;margin-bottom:0.5rem;">Prediction Row ID</label>
+              <input id="predictionRowIdColumn" class="input" placeholder="optional" />
             </div>
             <button type="submit" id="predictionUploadBtn">Upload Predictions</button>
           </div>

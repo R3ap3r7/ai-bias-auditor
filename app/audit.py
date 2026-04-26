@@ -210,6 +210,7 @@ def run_audit(
     uploaded_model: Any | None = None,
     uploaded_model_name: str | None = None,
     uploaded_predictions: pd.Series | None = None,
+    uploaded_prediction_scores: pd.Series | None = None,
     uploaded_prediction_metadata: dict[str, Any] | None = None,
     policy_id: str = DEFAULT_POLICY_ID,
     report_template: str | None = None,
@@ -257,6 +258,7 @@ def run_audit(
             protected_attributes,
             outcome_column,
             uploaded_predictions,
+            uploaded_prediction_scores,
             uploaded_prediction_metadata or {},
             pre_audit["proxy_flags"],
             policy,
@@ -1254,6 +1256,7 @@ def audit_prediction_csv(
     protected_attributes: list[str],
     outcome_column: str,
     predictions: pd.Series,
+    scores: pd.Series | None,
     prediction_metadata: dict[str, Any],
     proxy_flags: list[dict[str, Any]],
     policy: dict[str, Any],
@@ -1264,6 +1267,7 @@ def audit_prediction_csv(
     y = df[outcome_column].astype(int)
     y_pred, prediction_validation = normalize_prediction_output(predictions)
     y_pred.index = y.index
+    threshold_metadata = build_score_metadata(scores, prediction_metadata) if scores is not None else {"available": False}
     prediction_validation["warnings"].append(
         "Prediction-only CSV mode does not inspect or execute the model artifact. Feature-level explanations and mitigation simulations are limited."
     )
@@ -1283,9 +1287,10 @@ def audit_prediction_csv(
             "strategy": "prediction_csv",
             "details": (
                 f"Audited externally generated predictions from `{prediction_metadata.get('filename', 'predictions.csv')}` "
-                f"using column `{prediction_metadata.get('selected_column', 'prediction')}`."
+                f"using column `{prediction_metadata.get('selected_prediction_column', prediction_metadata.get('selected_column', 'prediction'))}`."
             ),
             "warnings": prediction_metadata.get("warnings", []),
+            "validation": prediction_metadata,
         },
         policy=policy,
         grouping_overrides=grouping_overrides,
@@ -1308,7 +1313,35 @@ def audit_prediction_csv(
         "reason": "Prediction-only mode cannot retrain or simulate mitigations because the original model artifact was not provided.",
         "recommended_next_step": "Re-run with a safe supported model or retrain externally and compare a second prediction CSV after remediation.",
     }
+    result["prediction_validation"]["csv_validation"] = prediction_metadata
+    result["threshold_sensitivity"] = threshold_metadata
     return result
+
+
+def build_score_metadata(scores: pd.Series, prediction_metadata: dict[str, Any]) -> dict[str, Any]:
+    numeric_scores = pd.to_numeric(scores, errors="coerce")
+    valid_scores = numeric_scores.dropna()
+    if valid_scores.empty:
+        return {
+            "available": False,
+            "selected_score_column": prediction_metadata.get("selected_score_column"),
+            "reason": "The selected score column did not contain numeric score values.",
+        }
+    return {
+        "available": True,
+        "selected_score_column": prediction_metadata.get("selected_score_column"),
+        "rows_with_scores": int(valid_scores.shape[0]),
+        "missing_scores": int(numeric_scores.isna().sum()),
+        "min_score": round(float(valid_scores.min()), 6),
+        "max_score": round(float(valid_scores.max()), 6),
+        "mean_score": round(float(valid_scores.mean()), 6),
+        "recommended_threshold_review": True,
+        "supported_future_analysis": [
+            "threshold sweep",
+            "group-specific sensitivity review",
+            "calibration by protected group",
+        ],
+    }
 
 
 def build_post_audit_result(
@@ -2281,7 +2314,7 @@ def build_report_prompt(summary: dict[str, Any]) -> str:
     }
     return textwrap.dedent(
         f"""
-        You are an AI ethics expert. Based on this bias audit, provide:
+        You are an AI ethics expert. Based on this bias audit, provide a clear, structured advisory summary with these headings:
         1. An executive summary of what bias was found and how serious it is.
         2. A deployment recommendation: Safe to deploy / Needs review / Do not deploy, with reasons.
         3. Why the bias may be happening, based on proxy variables, feature importance, and group outcomes.
@@ -2291,6 +2324,7 @@ def build_report_prompt(summary: dict[str, Any]) -> str:
 
         Write for a non-technical manager, not a data scientist.
         Avoid claiming the model has been fixed. Recommendations should be concrete, cautious, and implementation-ready.
+        State that this LLM summary is advisory, cannot certify model safety, and is not proof of legal compliance or causal discrimination.
 
         Audit data:
         {compact}
@@ -2423,6 +2457,7 @@ def build_limitations(mode: str, feature_importance: list[dict[str, Any]]) -> li
     limitations = [
         "This auditor currently targets tabular binary classification workflows only.",
         "Fairness metrics quantify correlations in outcomes and errors; they do not prove causality or legal compliance by themselves.",
+        "Gemini or other LLM-written summaries are advisory and cannot certify model safety.",
         "Small protected groups can make fairness estimates unstable.",
     ]
     if not feature_importance:

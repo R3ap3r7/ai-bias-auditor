@@ -28,10 +28,15 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   DatasetSession? _dataset;
   UploadedModelInfo? _uploadedModel;
+  PredictionCsvInfo? _predictionCsv;
   final Set<String> _protectedAttributes = {};
+  final Set<String> _controlFeatures = {};
   String? _outcomeColumn;
   String _auditMode = 'train';
   String _modelType = 'compare_all';
+  String _policyId = 'default_governance_v1';
+  String _reportTemplate = 'full_report';
+  double _modelSelectionPriority = 0.55;
   bool _busy = false;
   String? _statusMessage;
   String? _errorMessage;
@@ -39,11 +44,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Map<String, dynamic>? _auditResult;
   _AuditPage _selectedPage = _AuditPage.workspace;
   bool _guestMode = false;
+  final TextEditingController _predictionColumnController =
+      TextEditingController();
+  final TextEditingController _scoreColumnController = TextEditingController();
+  final TextEditingController _datasetRowIdController = TextEditingController();
+  final TextEditingController _predictionRowIdController =
+      TextEditingController();
 
   static const _demoDatasets = {
     'compas': 'COMPAS',
     'adult': 'UCI Adult',
-    'german_credit': 'German Credit',
+    'german': 'German Credit',
   };
 
   static const _modelOptions = {
@@ -58,6 +69,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
     'knn': 'K-Nearest Neighbors',
     'gaussian_nb': 'Gaussian Naive Bayes',
   };
+
+  static const _policyOptions = {
+    'default_governance_v1': 'Default Governance',
+    'employment_screening_strict': 'Employment Screening',
+    'credit_lending_strict': 'Credit Lending',
+    'medical_triage_strict': 'Medical Triage',
+    'low_risk_internal_tool': 'Low-Risk Internal Tool',
+  };
+
+  static const _reportTemplateOptions = {
+    'full_report': 'Full Report',
+    'executive_summary': 'Executive Summary',
+    'technical_audit': 'Technical Audit',
+    'compliance_review': 'Compliance Review',
+    'model_card': 'Model Card',
+  };
+
+  @override
+  void dispose() {
+    _predictionColumnController.dispose();
+    _scoreColumnController.dispose();
+    _datasetRowIdController.dispose();
+    _predictionRowIdController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -406,9 +442,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           MetricTile(
             label: 'Model source',
-            value: _auditMode == 'uploaded_model' ? 'Uploaded' : 'Trained',
-            detail: _auditMode == 'uploaded_model'
-                ? _uploadedModel?.filename ?? 'Awaiting model'
+            value: _auditMode == 'prediction_csv' ? 'Predictions' : 'Trained',
+            detail: _auditMode == 'prediction_csv'
+                ? _predictionCsv?.filename ?? 'Awaiting prediction CSV'
                 : _modelOptions[_modelType],
           ),
         ],
@@ -591,8 +627,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             child: Text('Train inside auditor'),
                           ),
                           DropdownMenuItem(
-                            value: 'uploaded_model',
-                            child: Text('Use uploaded model'),
+                            value: 'prediction_csv',
+                            child: Text('Use prediction CSV'),
                           ),
                         ],
                         onChanged: _busy
@@ -616,7 +652,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               ),
                             )
                             .toList(),
-                        onChanged: _busy || _auditMode == 'uploaded_model'
+                        onChanged: _busy || _auditMode != 'train'
                             ? null
                             : (value) => setState(
                                   () => _modelType = value ?? 'compare_all',
@@ -625,9 +661,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ],
                 ),
-                if (_auditMode == 'uploaded_model') ...[
+                const SizedBox(height: 16),
+                _buildGovernanceControls(columns, compact),
+                if (_auditMode == 'prediction_csv') ...[
                   const SizedBox(height: 16),
-                  _buildModelUpload(),
+                  _buildPredictionUpload(),
                 ],
                 const SizedBox(height: 20),
                 Wrap(
@@ -692,7 +730,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildModelUpload() {
+  Widget _buildPredictionUpload() {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -702,25 +740,176 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Uploaded model',
+          Text('Prediction CSV',
               style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
           Text(
-            _uploadedModel == null
-                ? 'Accepted formats: .joblib, .pkl, .pickle from trusted sources only.'
-                : '${_uploadedModel!.filename} loaded as ${_uploadedModel!.className}',
+            _predictionCsv?.summary ??
+                'Upload externally generated binary predictions. Optional row IDs align predictions without relying on row order.',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: AppColors.muted,
                 ),
           ),
           const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: _busy ? null : _pickModel,
-            icon: const Icon(Icons.model_training),
-            label: const Text('Upload model file'),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              SizedBox(
+                width: 220,
+                child: TextField(
+                  controller: _predictionColumnController,
+                  decoration: const InputDecoration(
+                    labelText: 'Prediction column',
+                    hintText: 'prediction',
+                  ),
+                ),
+              ),
+              SizedBox(
+                width: 220,
+                child: TextField(
+                  controller: _scoreColumnController,
+                  decoration: const InputDecoration(
+                    labelText: 'Score column',
+                    hintText: 'score',
+                  ),
+                ),
+              ),
+              SizedBox(
+                width: 220,
+                child: TextField(
+                  controller: _datasetRowIdController,
+                  decoration: const InputDecoration(
+                    labelText: 'Dataset row ID',
+                    hintText: 'optional',
+                  ),
+                ),
+              ),
+              SizedBox(
+                width: 220,
+                child: TextField(
+                  controller: _predictionRowIdController,
+                  decoration: const InputDecoration(
+                    labelText: 'Prediction row ID',
+                    hintText: 'optional',
+                  ),
+                ),
+              ),
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _pickPredictionCsv,
+                icon: const Icon(Icons.table_rows),
+                label: const Text('Upload predictions'),
+              ),
+            ],
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildGovernanceControls(List<String> columns, bool compact) {
+    final outcome = _outcomeColumn;
+    final availableControls = columns
+        .where((column) =>
+            column != outcome && !_protectedAttributes.contains(column))
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            SizedBox(
+              width: compact ? double.infinity : 300,
+              child: DropdownButtonFormField<String>(
+                initialValue: _policyId,
+                decoration:
+                    const InputDecoration(labelText: 'Governance policy'),
+                items: _policyOptions.entries
+                    .map(
+                      (entry) => DropdownMenuItem(
+                        value: entry.key,
+                        child: Text(entry.value),
+                      ),
+                    )
+                    .toList(),
+                onChanged: _busy
+                    ? null
+                    : (value) => setState(
+                          () => _policyId = value ?? 'default_governance_v1',
+                        ),
+              ),
+            ),
+            SizedBox(
+              width: compact ? double.infinity : 300,
+              child: DropdownButtonFormField<String>(
+                initialValue: _reportTemplate,
+                decoration: const InputDecoration(labelText: 'Report template'),
+                items: _reportTemplateOptions.entries
+                    .map(
+                      (entry) => DropdownMenuItem(
+                        value: entry.key,
+                        child: Text(entry.value),
+                      ),
+                    )
+                    .toList(),
+                onChanged: _busy
+                    ? null
+                    : (value) => setState(
+                        () => _reportTemplate = value ?? 'full_report'),
+              ),
+            ),
+            SizedBox(
+              width: compact ? double.infinity : 320,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Model priority',
+                      style: Theme.of(context).textTheme.bodyMedium),
+                  Slider(
+                    value: _modelSelectionPriority,
+                    min: 0,
+                    max: 1,
+                    divisions: 20,
+                    label:
+                        '${(_modelSelectionPriority * 100).round()}% accuracy',
+                    onChanged: _busy
+                        ? null
+                        : (value) =>
+                            setState(() => _modelSelectionPriority = value),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Text('Same-background controls',
+            style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: availableControls.map((column) {
+            return FilterChip(
+              label: Text(column),
+              selected: _controlFeatures.contains(column),
+              onSelected: _busy
+                  ? null
+                  : (selected) {
+                      setState(() {
+                        if (selected) {
+                          _controlFeatures.add(column);
+                        } else {
+                          _controlFeatures.remove(column);
+                        }
+                      });
+                    },
+            );
+          }).toList(),
+        ),
+      ],
     );
   }
 
@@ -1066,31 +1255,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  Future<void> _pickModel() async {
+  Future<void> _pickPredictionCsv() async {
     final dataset = _dataset;
     if (dataset == null) {
-      setState(
-          () => _errorMessage = 'Load a dataset before uploading a model.');
+      setState(() =>
+          _errorMessage = 'Load a dataset before uploading prediction CSV.');
       return;
     }
 
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: const ['joblib', 'pkl', 'pickle'],
+      allowedExtensions: const ['csv'],
       withData: true,
     );
     if (result == null || result.files.isEmpty) return;
 
-    await _guarded('Uploading model...', () async {
-      final model = await widget.backendClient.uploadModel(
+    await _guarded('Uploading predictions...', () async {
+      final predictions = await widget.backendClient.uploadPredictions(
         sessionId: dataset.sessionId,
         file: result.files.single,
+        predictionColumn: _predictionColumnController.text,
+        scoreColumn: _scoreColumnController.text,
+        datasetRowIdColumn: _datasetRowIdController.text,
+        predictionRowIdColumn: _predictionRowIdController.text,
       );
       setState(() {
-        _uploadedModel = model;
-        _statusMessage = model.warning.isEmpty
-            ? '${model.filename} loaded.'
-            : '${model.filename} loaded. ${model.warning}';
+        _predictionCsv = predictions;
+        _statusMessage = predictions.summary;
       });
     });
   }
@@ -1154,21 +1345,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
       setState(() => _errorMessage = 'Select an outcome column.');
       return null;
     }
-    if (_auditMode == 'uploaded_model' && _uploadedModel == null) {
+    if (_auditMode == 'prediction_csv' && _predictionCsv == null) {
       setState(() => _errorMessage =
-          'Upload a model before running uploaded-model audit.');
+          'Upload a prediction CSV before running prediction-only audit.');
       return null;
     }
 
+    final user = widget.auditRepository.currentUser;
     setState(() => _errorMessage = null);
     return AuditPayload(
       sessionId: dataset.sessionId,
       protectedAttributes: _protectedAttributes.toList(),
       outcomeColumn: outcome,
-      modelType:
-          _auditMode == 'uploaded_model' ? 'logistic_regression' : _modelType,
+      modelType: _auditMode == 'train' ? _modelType : 'logistic_regression',
       auditMode: _auditMode,
       modelId: _uploadedModel?.modelId,
+      predictionArtifactId: _predictionCsv?.artifactId,
+      policyId: _policyId,
+      reportTemplate: _reportTemplate,
+      controlFeatures: _controlFeatures.toList(),
+      groupingOverrides: const {},
+      modelSelectionPriority: _modelSelectionPriority,
+      persistenceMode: 'anonymized_traces',
+      userId: user?.uid,
+      projectId: const String.fromEnvironment('FIREBASE_PROJECT_ID'),
     );
   }
 
@@ -1183,18 +1383,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
       dataset.defaults['model_type'],
       fallback: 'compare_all',
     );
+    final defaultControls =
+        _readStringList(dataset.defaults['control_features']);
+    final defaultPolicy = _readString(
+      dataset.defaults['policy_id'],
+      fallback: 'default_governance_v1',
+    );
 
     setState(() {
       _dataset = dataset;
       _protectedAttributes
         ..clear()
         ..addAll(defaultProtected);
+      _controlFeatures
+        ..clear()
+        ..addAll(defaultControls);
       _outcomeColumn = defaultOutcome.isEmpty ? null : defaultOutcome;
       _modelType = _modelOptions.containsKey(defaultModel)
           ? defaultModel
           : 'compare_all';
+      _policyId = _policyOptions.containsKey(defaultPolicy)
+          ? defaultPolicy
+          : 'default_governance_v1';
+      _reportTemplate = 'full_report';
+      _modelSelectionPriority = 0.55;
       _auditMode = 'train';
       _uploadedModel = null;
+      _predictionCsv = null;
+      _predictionColumnController.clear();
+      _scoreColumnController.clear();
+      _datasetRowIdController.clear();
+      _predictionRowIdController.clear();
       _preAuditResult = null;
       _auditResult = null;
       _selectedPage = _AuditPage.workspace;
@@ -1207,10 +1426,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() {
       _dataset = null;
       _uploadedModel = null;
+      _predictionCsv = null;
       _protectedAttributes.clear();
+      _controlFeatures.clear();
       _outcomeColumn = null;
       _auditMode = 'train';
       _modelType = 'compare_all';
+      _policyId = 'default_governance_v1';
+      _reportTemplate = 'full_report';
+      _modelSelectionPriority = 0.55;
+      _predictionColumnController.clear();
+      _scoreColumnController.clear();
+      _datasetRowIdController.clear();
+      _predictionRowIdController.clear();
       _busy = false;
       _statusMessage = null;
       _errorMessage = null;

@@ -32,6 +32,10 @@ const els = {
   modelStatus: document.getElementById("modelStatus"),
   predictionUploadForm: document.getElementById("predictionUploadForm"),
   predictionFile: document.getElementById("predictionFile"),
+  predictionColumn: document.getElementById("predictionColumn"),
+  scoreColumn: document.getElementById("scoreColumn"),
+  datasetRowIdColumn: document.getElementById("datasetRowIdColumn"),
+  predictionRowIdColumn: document.getElementById("predictionRowIdColumn"),
   predictionStatus: document.getElementById("predictionStatus"),
   runPreAuditButton: document.getElementById("runPreAuditButton"),
   runAuditButton: document.getElementById("runAuditButton"),
@@ -249,11 +253,20 @@ async function uploadPredictions(event) {
   const formData = new FormData();
   formData.append("session_id", state.sessionId);
   formData.append("file", file);
+  appendOptionalFormValue(formData, "prediction_column", els.predictionColumn.value);
+  appendOptionalFormValue(formData, "score_column", els.scoreColumn.value);
+  appendOptionalFormValue(formData, "dataset_row_id_column", els.datasetRowIdColumn.value);
+  appendOptionalFormValue(formData, "prediction_row_id_column", els.predictionRowIdColumn.value);
   setBusy("Uploading predictions...");
   try {
     const data = await requestJson("/api/predictions", { method: "POST", body: formData });
     state.predictionArtifactId = data.prediction_artifact_id;
-    els.predictionStatus.textContent = `${data.filename} loaded with ${data.rows} predictions from column ${data.details.selected_column}.`;
+    const details = data.details || {};
+    const scoreText = details.selected_score_column ? ` Score column: ${details.selected_score_column}.` : "";
+    const rowText = details.row_id_matching
+      ? ` Matched ${details.matched_rows} rows by ID; ${details.extra_predictions} extra prediction rows ignored.`
+      : ` Matched ${details.matched_rows} rows by order.`;
+    els.predictionStatus.textContent = `${data.filename} loaded with ${data.rows} predictions from column ${details.selected_prediction_column || details.selected_column}.${scoreText}${rowText}`;
   } catch (error) {
     state.predictionArtifactId = null;
     els.predictionStatus.textContent = "";
@@ -281,6 +294,10 @@ function configureDataset(data) {
   els.predictionStatus.textContent = "";
   els.modelFile.value = "";
   els.predictionFile.value = "";
+  els.predictionColumn.value = "";
+  els.scoreColumn.value = "";
+  els.datasetRowIdColumn.value = "";
+  els.predictionRowIdColumn.value = "";
   els.auditModeSelect.value = "train";
   if (state.defaults.policy_id && Array.from(els.policySelect.options).some((option) => option.value === state.defaults.policy_id)) {
     els.policySelect.value = state.defaults.policy_id;
@@ -341,7 +358,13 @@ function selectedAuditPayload() {
     report_template: els.reportTemplateSelect.value,
     control_features: selectedControlFeatures(),
     model_selection_priority: Number(els.modelPriority.value) / 100,
+    persistence_mode: "anonymized_traces",
   };
+}
+
+function appendOptionalFormValue(formData, key, value) {
+  const trimmed = String(value || "").trim();
+  if (trimmed) formData.append(key, trimmed);
 }
 
 async function runPreAudit() {
@@ -824,11 +847,10 @@ function hidePostAuditSections() {
 }
 
 function toggleModelUpload() {
-  const useUpload = els.auditModeSelect.value === "uploaded_model";
   const usePredictions = els.auditModeSelect.value === "prediction_csv";
-  els.modelUploadForm.classList.toggle("hidden", !useUpload);
+  els.modelUploadForm.classList.add("hidden");
   els.predictionUploadForm.classList.toggle("hidden", !usePredictions);
-  els.modelSelect.disabled = useUpload || usePredictions;
+  els.modelSelect.disabled = usePredictions;
 }
 
 function renderPriorityLabel() {

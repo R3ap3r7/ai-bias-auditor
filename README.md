@@ -16,11 +16,11 @@
 
 ## About
 
-Algorithmic bias is not a hypothetical risk — it is a documented, recurring harm. The **COMPAS recidivism algorithm** was found to predict higher recuse rates for Black defendants at nearly twice the rate of white defendants. Amazon scrapped an internal hiring algorithm after it systematically downgraded résumés that included the word *women's*. Credit scoring models trained on postcode data routinely encode historical redlining, penalising applicants not for their credit behaviour but for where they live. These systems cause real harm at scale, and most practitioners have no practical way to audit them before deployment.
+Algorithmic bias is not a hypothetical risk — it is a documented, recurring harm. The **COMPAS recidivism algorithm** was found to assign higher recidivism risk scores to Black defendants at nearly twice the rate of white defendants. Amazon scrapped an internal hiring algorithm after it systematically downgraded résumés that included the word *women's*. Credit scoring models trained on postcode data routinely encode historical redlining, penalising applicants not for their credit behaviour but for where they live. These systems cause real harm at scale, and most practitioners have no practical way to audit them before deployment.
 
 **AI Bias Auditor** is a local, privacy-first fairness auditing tool that gives teams the ability to measure, understand, and document bias in their ML models — before a single prediction reaches a real person. Upload a CSV dataset and a trained model (or let AI Bias Auditor train one), mark your protected attributes, and receive a full fairness report covering demographic parity, equalized odds, disparate impact, proxy variable detection, intersectional group analysis, and row-level decision traces — all within minutes.
 
-Raw datasets and uploaded model artifacts are processed by the audit engine and are not persisted by default. Optional Gemini reporting sends a compact audit summary, not raw CSV rows, to generate stakeholder language. Optional Firestore history stores report artifacts and aggregate governance metadata. For fully offline use, disable Gemini, leave Firestore unconfigured, and self-host frontend assets such as fonts and Chart.js.
+Raw datasets and uploaded model artifacts are processed by the audit engine and are not persisted by default. Uploaded model artifacts are disabled in the UI and API by default for this release; use prediction CSV mode unless `ENABLE_UPLOADED_MODEL_MODE=true` is explicitly configured for trusted local testing. Optional Gemini reporting sends a compact audit summary, not raw CSV rows, to generate advisory stakeholder language. Optional Firestore history stores report artifacts and aggregate governance metadata. For fully offline use, disable Gemini, leave Firestore unconfigured, and self-host frontend assets such as fonts and Chart.js.
 
 ---
 
@@ -32,18 +32,18 @@ Raw datasets and uploaded model artifacts are processed by the audit engine and 
 | **Configurable Governance Policies** | Applies policy presets for default governance, employment screening, credit lending, medical triage, and low-risk internal tools |
 | **Demographic Parity Difference** | Measures the maximum difference in positive prediction rates between groups for each protected attribute |
 | **Equalized Odds Difference** | Measures the maximum gap in true positive and false positive rates across groups — penalising models that are accurate on average but unfair under the hood |
-| **Disparate Impact Ratio** | Computes the ratio of the lowest to highest selection rate across groups; values below 0.8 violate the legal four-fifths rule |
+| **Disparate Impact Ratio** | Computes the ratio of the lowest to highest selection rate across groups; values below 0.8 may indicate adverse impact under the four-fifths rule and should trigger review |
 | **Statistical Representation** | Reports the positive-outcome rate per protected group relative to the group with the highest rate, flagging ratios below 0.8 (warning) and 0.5 (danger) |
-| **Proxy Variable Detection** | Identifies non-protected features that are strongly correlated with protected attributes using Pearson correlation, Cramér's V, and the correlation ratio — flagging features that may laundering discrimination |
+| **Proxy Variable Detection** | Identifies non-protected features that are strongly correlated with protected attributes using Pearson correlation, Cramér's V, and the correlation ratio — flagging features that may launder discrimination |
 | **Model Comparison Engine** | Trains and tunes all 9 supported classifiers, ranks them with policy-configurable accuracy/fairness weights, and marks models that fail policy constraints |
 | **Decision Audit Traces** | Explains individual high-risk predictions using local baseline perturbation: for each flagged row, the contribution of each feature to the prediction is quantified |
 | **Intersectional Bias Analysis** | Analyses combinatorial subgroups (e.g. `race=Black | sex=Female`) to detect bias that disappears in single-attribute averages |
-| **Same-Background Fairness** | Stratified same-background cohort analysis: compares outcomes across protected groups after controlling for up to three non-protected features, isolating discrimination from confounding |
+| **Same-Background Fairness** | Stratified same-background cohort analysis: compares outcomes across protected groups after controlling for up to three non-protected features, reducing obvious confounding by comparing protected groups within similar feature-defined cohorts |
 | **Mitigation Simulation** | Rapid diagnostic simulation that retrains the model after dropping protected attributes and high-risk proxy features to estimate potential fairness gains |
 | **PDF Reports** | Exports a full audit report as a structured PDF including traceability metadata (run ID, dataset SHA-256 hash, model fingerprint) suitable for governance documentation |
 | **Persistent Audit History** | Stores JSON/PDF audit artifacts locally and can mirror report summaries to Firestore when Google credentials are configured |
 | **Safer Prediction CSV Mode** | Audits externally generated prediction CSVs without loading unsafe pickle/joblib artifacts |
-| **Optional Gemini Integration** | When a `GEMINI_API_KEY` is configured, Gemini 2.5 Flash generates a plain-English narrative report for non-technical stakeholders from a compact, anonymised audit summary |
+| **Optional Gemini Integration** | When a `GEMINI_API_KEY` is configured, Gemini 2.5 Flash generates a plain-English advisory narrative for non-technical stakeholders from a compact, anonymised audit summary; it cannot certify model safety |
 
 ---
 
@@ -55,7 +55,7 @@ Navigate to [http://127.0.0.1:8000/audit](http://127.0.0.1:8000/audit). Upload a
 
 ### Step 2 — Configure protected attributes and outcome column
 
-The column configuration table lists every column in your dataset. Toggle the **Protected Attribute** switch for each column you want to monitor for fairness (e.g. `race`, `sex`, `age`). Select the binary **Outcome Column** (the prediction target), choose a governance policy, choose a report template, choose same-background control variables, and select whether to train a model, audit an uploaded model, or audit a prediction CSV.
+The column configuration table lists every column in your dataset. Toggle the **Protected Attribute** switch for each column you want to monitor for fairness (e.g. `race`, `sex`, `age`). Select the binary **Outcome Column** (the prediction target), choose a governance policy, choose a report template, choose same-background control variables, and select whether to train a model or audit a prediction CSV. Uploaded model artifacts are disabled by default and treated as a future-release/trusted-lab mode.
 
 ### Step 3 — Run pre-audit and/or post-model audit
 
@@ -107,9 +107,11 @@ Each policy configures fairness thresholds, severity weights, deployment-decisio
 
 ## Persistence
 
-Audit sessions still keep raw uploaded datasets and unsafe model artifacts in process memory only. Completed reports are persisted as JSON under `data/audit_history/` and are exposed through `/history` and `/api/history`. When `google-cloud-firestore` is installed and `FIRESTORE_PROJECT_ID` plus credentials are configured, report summaries and report JSON are mirrored to Firestore collections `auditRuns` and `reports`.
+Audit sessions still keep raw uploaded datasets and unsafe model artifacts in process memory only. Completed reports are persisted as JSON under `data/audit_history/` and are exposed through `/history` and `/api/history`. Report persistence modes are `aggregate_only`, `anonymized_traces`, and `full_report`; the default is `anonymized_traces` unless `REPORT_PERSISTENCE_MODE` is configured. Production deployments should use `aggregate_only` or `anonymized_traces`.
 
-The stored artifact intentionally avoids raw CSV persistence by default. It stores dataset hashes, model fingerprints, aggregate metrics, policy metadata, report text, severity, and deployment decisions.
+The FastAPI HTML UI is the primary local/private UI. It has local persistent history and optional server-side Firestore mirroring when `google-cloud-firestore`, `FIRESTORE_PROJECT_ID`, and credentials are configured. It does not provide browser Google login. The separate `flutter_firebase_auditor/` UI provides Firebase Auth with Google sign-in and writes user-scoped audit history to Cloud Firestore under each authenticated user.
+
+The stored artifact intentionally avoids raw CSV persistence by default and does not persist uploaded pickle/joblib model artifacts. It stores dataset hashes, model fingerprints, aggregate metrics, policy metadata, report text or report metadata depending on persistence mode, severity, and deployment decisions.
 
 ## Supported Scope and Limitations
 
@@ -129,7 +131,7 @@ Not yet supported:
 - LLM, image, audio, or generative-model bias audits.
 - ONNX Runtime Web, Web Workers, WebGPU, or browser-side model execution.
 
-The report includes a limitations section because fairness metrics are governance evidence, not proof of legal compliance or causal discrimination.
+The report includes a limitations section because fairness metrics are governance evidence, not proof of legal compliance or causal discrimination. LLM/Gemini summaries are advisory narrative aids and cannot certify model safety.
 
 ---
 
@@ -246,7 +248,7 @@ The maximum difference in **true positive rate** (TPR) or **false positive rate*
 ### Disparate Impact Ratio
 > *Does the group with the lowest selection rate receive at least 80% of the rate of the best-served group?*
 
-Computed as: `min(selection_rate across groups) / max(selection_rate across groups)`. A ratio below **0.8** violates the EEOC four-fifths rule — the legal standard used in US employment discrimination law. A value of `1.0` is ideal; `0.0` means one group receives no positive predictions at all.
+Computed as: `min(selection_rate across groups) / max(selection_rate across groups)`. A ratio below **0.8** may indicate adverse impact under the four-fifths rule and should trigger review. A value of `1.0` is ideal; `0.0` means one group receives no positive predictions at all.
 
 ### Statistical Parity Difference (Representation Ratio)
 > *Are all groups represented fairly in the training data's positive outcomes?*

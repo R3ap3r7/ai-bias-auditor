@@ -22,6 +22,8 @@ except Exception:  # pragma: no cover - optional dependency for local/offline de
 ARTIFACT_DIR = Path(__file__).resolve().parent.parent / "data" / "audit_history"
 ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 MAX_LOCAL_ARTIFACTS = 200
+PERSISTENCE_MODES = {"aggregate_only", "anonymized_traces", "full_report"}
+DEFAULT_PERSISTENCE_MODE = os.getenv("REPORT_PERSISTENCE_MODE", "anonymized_traces")
 
 
 @dataclass
@@ -46,8 +48,12 @@ class AuditArtifactStore:
             "project_id": self._firestore.project_id if self._firestore else os.getenv("FIRESTORE_PROJECT_ID", ""),
         }
 
-    def save_report(self, report_id: str, result: dict[str, Any]) -> None:
-        payload = {"report_id": report_id, "stored_at_utc": datetime.now(UTC).isoformat(), **result}
+    def save_report(self, report_id: str, result: dict[str, Any], persistence_mode: str | None = None) -> None:
+        mode = normalize_persistence_mode(persistence_mode)
+        payload = sanitize_for_persistence(
+            {"report_id": report_id, "stored_at_utc": datetime.now(UTC).isoformat(), **result},
+            mode,
+        )
         local_path = self._local_report_path(report_id)
         local_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
         self._prune_local_artifacts()
@@ -58,8 +64,14 @@ class AuditArtifactStore:
             return
 
         try:
-            firestore_ctx.client.collection(firestore_ctx.audit_runs_collection).document(report_id).set(summary)
-            firestore_ctx.client.collection(firestore_ctx.reports_collection).document(report_id).set(payload)
+            user_id = payload.get("traceability", {}).get("user_id")
+            if user_id:
+                user_ref = firestore_ctx.client.collection("users").document(str(user_id))
+                user_ref.collection(firestore_ctx.audit_runs_collection).document(report_id).set(summary)
+                user_ref.collection(firestore_ctx.reports_collection).document(report_id).set(payload)
+            else:
+                firestore_ctx.client.collection(firestore_ctx.audit_runs_collection).document(report_id).set(summary)
+                firestore_ctx.client.collection(firestore_ctx.reports_collection).document(report_id).set(payload)
         except Exception as exc:  # pragma: no cover - depends on external credentials/network.
             self._firestore_error = str(exc)
 
@@ -78,6 +90,31 @@ class AuditArtifactStore:
         except Exception as exc:  # pragma: no cover - depends on external credentials/network.
             self._firestore_error = str(exc)
         return None
+
+    def delete_report(self, report_id: str) -> bool:
+        deleted = False
+        local_path = self._local_report_path(report_id)
+        local_payload = None
+        if local_path.exists():
+            local_payload = json.loads(local_path.read_text(encoding="utf-8"))
+            local_path.unlink()
+            deleted = True
+
+        firestore_ctx = self._ensure_firestore()
+        if firestore_ctx is None:
+            return deleted
+        try:
+            user_id = (local_payload or {}).get("traceability", {}).get("user_id")
+            if user_id:
+                user_ref = firestore_ctx.client.collection("users").document(str(user_id))
+                user_ref.collection(firestore_ctx.audit_runs_collection).document(report_id).delete()
+                user_ref.collection(firestore_ctx.reports_collection).document(report_id).delete()
+            firestore_ctx.client.collection(firestore_ctx.audit_runs_collection).document(report_id).delete()
+            firestore_ctx.client.collection(firestore_ctx.reports_collection).document(report_id).delete()
+            deleted = True
+        except Exception as exc:  # pragma: no cover - depends on external credentials/network.
+            self._firestore_error = str(exc)
+        return deleted
 
     def list_reports(self, limit: int = 25) -> list[dict[str, Any]]:
         local_reports = sorted(
@@ -179,7 +216,61 @@ def build_history_summary(result: dict[str, Any]) -> dict[str, Any]:
         "max_demographic_parity_difference": round(float(dp), 4),
         "max_equalized_odds_difference": round(float(eo), 4),
         "min_disparate_impact_ratio": round(float(min(di_values, default=1.0)), 4),
+        "ownerId": traceability.get("user_id"),
+        "user_id": traceability.get("user_id"),
+        "project_id": traceability.get("project_id"),
+        "organization_id": traceability.get("organization_id"),
+        "persistence_mode": traceability.get("persistence_mode"),
     }
+
+
+def normalize_persistence_mode(mode: str | None) -> str:
+    selected = (mode or DEFAULT_PERSISTENCE_MODE or "anonymized_traces").strip()
+    return selected if selected in PERSISTENCE_MODES else "anonymized_traces"
+
+
+def sanitize_for_persistence(payload: dict[str, Any], mode: str) -> dict[str, Any]:
+    sanitized = json.loads(json.dumps(payload, ensure_ascii=True))
+    sanitized.setdefault("traceability", {})["persistence_mode"] = mode
+    if mode == "full_report":
+        return sanitized
+
+    model = sanitized.get("model", {})
+    post_audit = sanitized.get("post_audit", {})
+    for container in (model, post_audit):
+        trace = container.get("audit_trace")
+        if isinstance(trace, dict):
+            records = trace.get("records")
+            if isinstance(records, list):
+                if mode == "aggregate_only":
+                    trace["records"] = []
+                    trace["record_count_redacted"] = len(records)
+                else:
+                    trace["records"] = [anonymize_trace_record(record) for record in records[:20]]
+                    trace["record_count_persisted"] = min(len(records), 20)
+                    trace["record_count_total"] = len(records)
+    if mode == "aggregate_only":
+        sanitized["report"] = {
+            key: sanitized.get("report", {}).get(key)
+            for key in ("source", "template_id", "template_title", "limitations")
+        }
+    return sanitized
+
+
+def anonymize_trace_record(record: Any) -> Any:
+    if not isinstance(record, dict):
+        return record
+    safe = dict(record)
+    if "row_id" in safe:
+        safe["row_id"] = stable_redaction_id(safe["row_id"])
+    safe.pop("raw_row", None)
+    return safe
+
+
+def stable_redaction_id(value: Any) -> str:
+    import hashlib
+
+    return f"row_{hashlib.sha256(str(value).encode('utf-8')).hexdigest()[:12]}"
 
 
 STORE = AuditArtifactStore()

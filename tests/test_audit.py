@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
+import app.main as main_module
 from app.audit import AuditError, build_model_pipeline, calculate_severity, normalize_outcome, run_audit
 from app.main import app
 from app.policies import load_policy
@@ -214,7 +215,8 @@ def test_pre_audit_api_flow() -> None:
     assert body["pre_audit_severity"] in {"Low", "Medium", "High"}
 
 
-def test_uploaded_model_api_flow() -> None:
+def test_uploaded_model_api_flow(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main_module, "UPLOADED_MODEL_MODE_ENABLED", True)
     client = TestClient(app)
     df = biased_frame()
     upload = client.post(
@@ -255,6 +257,23 @@ def test_uploaded_model_api_flow() -> None:
     assert body["post_audit"]["mode"] == "uploaded_model"
     assert body["post_audit"]["performance"]["training_samples"] is None
     assert body["post_audit"]["prediction_validation"]["status"] == "Pass"
+
+
+def test_uploaded_model_api_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main_module, "UPLOADED_MODEL_MODE_ENABLED", False)
+    client = TestClient(app)
+    df = biased_frame()
+    upload = client.post(
+        "/api/upload",
+        files={"file": ("biased.csv", BytesIO(df.to_csv(index=False).encode()), "text/csv")},
+    )
+
+    model_upload = client.post(
+        "/api/model",
+        data={"session_id": upload.json()["session_id"]},
+        files={"file": ("loan_model.joblib", BytesIO(b"not-used"), "application/octet-stream")},
+    )
+    assert model_upload.status_code == 410
 
 
 def test_prediction_csv_api_flow_and_persistent_report() -> None:
@@ -299,6 +318,55 @@ def test_prediction_csv_api_flow_and_persistent_report() -> None:
     detail = client.get(f"/api/report/{body['report_id']}")
     assert detail.status_code == 200
     assert detail.json()["report_id"] == body["report_id"]
+
+
+def test_prediction_csv_row_id_matching_and_scores() -> None:
+    client = TestClient(app)
+    df = biased_frame().reset_index().rename(columns={"index": "row_id"})
+    upload = client.post(
+        "/api/upload",
+        files={"file": ("biased.csv", BytesIO(df.to_csv(index=False).encode()), "text/csv")},
+    )
+    session_id = upload.json()["session_id"]
+    predictions = pd.DataFrame(
+        {
+            "external_id": list(reversed(df["row_id"].tolist())),
+            "prediction": list(reversed(df["loan_approved"].tolist())),
+            "probability": [0.8 if value else 0.2 for value in reversed(df["loan_approved"].tolist())],
+        }
+    )
+
+    prediction_upload = client.post(
+        "/api/predictions",
+        data={
+            "session_id": session_id,
+            "dataset_row_id_column": "row_id",
+            "prediction_row_id_column": "external_id",
+            "prediction_column": "prediction",
+        },
+        files={"file": ("predictions.csv", BytesIO(predictions.to_csv(index=False).encode()), "text/csv")},
+    )
+
+    assert prediction_upload.status_code == 200
+    details = prediction_upload.json()["details"]
+    assert details["matched_rows"] == len(df)
+    assert details["missing_predictions"] == 0
+    assert details["extra_predictions"] == 0
+    assert details["selected_prediction_column"] == "prediction"
+    assert details["selected_score_column"] == "probability"
+
+    audit = client.post(
+        "/api/audit",
+        json={
+            "session_id": session_id,
+            "protected_attributes": ["race"],
+            "outcome_column": "loan_approved",
+            "audit_mode": "prediction_csv",
+            "prediction_artifact_id": prediction_upload.json()["prediction_artifact_id"],
+        },
+    )
+    assert audit.status_code == 200
+    assert audit.json()["model"]["threshold_sensitivity"]["available"] is True
 
 
 def test_uploaded_model_predictions_must_be_binary() -> None:

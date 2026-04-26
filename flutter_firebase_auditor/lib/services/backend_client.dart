@@ -58,6 +58,34 @@ class AuditBackendClient {
     return UploadedModelInfo.fromJson(body);
   }
 
+  Future<PredictionCsvInfo> uploadPredictions({
+    required String sessionId,
+    required PlatformFile file,
+    String? datasetRowIdColumn,
+    String? predictionRowIdColumn,
+    String? predictionColumn,
+    String? scoreColumn,
+  }) async {
+    final bytes = _requireBytes(file, 'prediction CSV');
+    final request = http.MultipartRequest('POST', _uri('/api/predictions'))
+      ..fields['session_id'] = sessionId
+      ..files.add(
+        http.MultipartFile.fromBytes(
+          'file',
+          bytes,
+          filename: file.name,
+        ),
+      );
+    _addOptionalField(request, 'dataset_row_id_column', datasetRowIdColumn);
+    _addOptionalField(
+        request, 'prediction_row_id_column', predictionRowIdColumn);
+    _addOptionalField(request, 'prediction_column', predictionColumn);
+    _addOptionalField(request, 'score_column', scoreColumn);
+
+    final body = await _sendMultipart(request);
+    return PredictionCsvInfo.fromJson(body);
+  }
+
   Future<Map<String, dynamic>> runPreAudit(AuditPayload payload) {
     return _postJson('/api/pre-audit', payload.toJson());
   }
@@ -112,6 +140,17 @@ class AuditBackendClient {
       throw AuditBackendException('Could not read the selected $label file.');
     }
     return bytes;
+  }
+
+  void _addOptionalField(
+    http.MultipartRequest request,
+    String key,
+    String? value,
+  ) {
+    final trimmed = value?.trim();
+    if (trimmed != null && trimmed.isNotEmpty) {
+      request.fields[key] = trimmed;
+    }
   }
 }
 
@@ -183,6 +222,39 @@ class UploadedModelInfo {
   }
 }
 
+class PredictionCsvInfo {
+  const PredictionCsvInfo({
+    required this.artifactId,
+    required this.filename,
+    required this.rows,
+    required this.details,
+  });
+
+  final String artifactId;
+  final String filename;
+  final int rows;
+  final Map<String, dynamic> details;
+
+  factory PredictionCsvInfo.fromJson(Map<String, dynamic> json) {
+    return PredictionCsvInfo(
+      artifactId: json['prediction_artifact_id'].toString(),
+      filename: json['filename']?.toString() ?? 'predictions.csv',
+      rows: _readInt(json['rows']),
+      details: _readMap(json['details']),
+    );
+  }
+
+  String get summary {
+    final predictionColumn =
+        details['selected_prediction_column'] ?? details['selected_column'];
+    final scoreColumn = details['selected_score_column'];
+    final matchedRows = details['matched_rows'] ?? rows;
+    final extraRows = details['extra_predictions'] ?? 0;
+    final scoreText = scoreColumn == null ? '' : ', score: $scoreColumn';
+    return '$filename: $matchedRows matched rows, prediction: $predictionColumn$scoreText, extra predictions: $extraRows';
+  }
+}
+
 class AuditPayload {
   const AuditPayload({
     required this.sessionId,
@@ -191,6 +263,16 @@ class AuditPayload {
     required this.modelType,
     required this.auditMode,
     this.modelId,
+    this.predictionArtifactId,
+    this.policyId = 'default_governance_v1',
+    this.reportTemplate = 'full_report',
+    this.controlFeatures = const [],
+    this.groupingOverrides = const {},
+    this.modelSelectionPriority,
+    this.persistenceMode = 'anonymized_traces',
+    this.userId,
+    this.projectId,
+    this.organizationId,
   });
 
   final String sessionId;
@@ -199,6 +281,16 @@ class AuditPayload {
   final String modelType;
   final String auditMode;
   final String? modelId;
+  final String? predictionArtifactId;
+  final String policyId;
+  final String reportTemplate;
+  final List<String> controlFeatures;
+  final Map<String, dynamic> groupingOverrides;
+  final double? modelSelectionPriority;
+  final String persistenceMode;
+  final String? userId;
+  final String? projectId;
+  final String? organizationId;
 
   Map<String, dynamic> toJson() {
     return {
@@ -208,6 +300,16 @@ class AuditPayload {
       'model_type': modelType,
       'audit_mode': auditMode,
       'model_id': modelId,
+      'prediction_artifact_id': predictionArtifactId,
+      'policy_id': policyId,
+      'report_template': reportTemplate,
+      'control_features': controlFeatures,
+      'grouping_overrides': groupingOverrides,
+      'model_selection_priority': modelSelectionPriority,
+      'persistence_mode': persistenceMode,
+      'user_id': userId,
+      'project_id': projectId,
+      'organization_id': organizationId,
     };
   }
 }
