@@ -2,6 +2,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/audit_record.dart';
 import '../services/audit_repository.dart';
@@ -43,7 +44,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Map<String, dynamic>? _preAuditResult;
   Map<String, dynamic>? _auditResult;
   _AuditPage _selectedPage = _AuditPage.workspace;
-  bool _guestMode = false;
   final TextEditingController _predictionColumnController =
       TextEditingController();
   final TextEditingController _scoreColumnController = TextEditingController();
@@ -102,7 +102,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         stream: widget.auditRepository.authStateChanges(),
         builder: (context, authSnapshot) {
           final user = authSnapshot.data;
-          if (user == null && !_guestMode) {
+          if (user == null) {
             return _buildLoginGate();
           }
 
@@ -117,13 +117,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       _AuditNavigationRail(
                         repository: widget.auditRepository,
                         user: user,
-                        guestMode: _guestMode,
                         selectedPage: _selectedPage,
                         onSelect: (page) =>
                             setState(() => _selectedPage = page),
                         onNewAudit: _startNewAudit,
-                        onExitGuestMode: () =>
-                            setState(() => _guestMode = false),
                       ),
                       content,
                     ],
@@ -139,11 +136,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     child: _AuditNavigationRail(
                       repository: widget.auditRepository,
                       user: user,
-                      guestMode: _guestMode,
                       selectedPage: _selectedPage,
                       onSelect: (page) => setState(() => _selectedPage = page),
                       onNewAudit: _startNewAudit,
-                      onExitGuestMode: () => setState(() => _guestMode = false),
                     ),
                   ),
                   Expanded(child: content),
@@ -203,14 +198,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     },
                     icon: const Icon(Icons.login),
                     label: const Text('Sign in with Google'),
-                  ),
-                  OutlinedButton(
-                    onPressed: () => setState(() {
-                      _guestMode = true;
-                      _selectedPage = _AuditPage.workspace;
-                      _errorMessage = null;
-                    }),
-                    child: const Text('Continue without saving history'),
                   ),
                 ],
               ),
@@ -367,8 +354,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ] else ...[
                 _HistoryReview(
                   repository: widget.auditRepository,
+                  backendClient: widget.backendClient,
                   user: user,
-                  guestMode: _guestMode,
                 ),
               ],
             ],
@@ -404,12 +391,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ],
           ),
         ),
-        StatusPill(
-          label: _guestMode ? 'Guest' : user?.email ?? 'Google account',
-          color: user == null && !_guestMode
-              ? AppColors.warning
-              : AppColors.primary,
-        ),
+        if (user != null) _UserBadge(user: user),
         const SizedBox(width: 8),
         if (severity.isNotEmpty) _severityPill(severity),
       ],
@@ -1140,6 +1122,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildGeminiSection() {
     final report = _readMap(_auditResult?['report']);
+    final reportId = _readString(_auditResult?['report_id'], fallback: '');
     final text = _readString(report['text'], fallback: '');
     final source = _readString(report['source'], fallback: 'Gemini analysis');
     return SurfacePanel(
@@ -1150,6 +1133,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
           SectionHeader(
             title: 'Gemini analysis',
             subtitle: source,
+            trailing: reportId.isEmpty
+                ? null
+                : OutlinedButton.icon(
+                    onPressed: () => _downloadPdf(reportId),
+                    icon: const Icon(Icons.picture_as_pdf_outlined),
+                    label: const Text('PDF'),
+                  ),
           ),
           const SizedBox(height: 16),
           if (_auditResult == null)
@@ -1329,6 +1319,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
+  Future<void> _downloadPdf(String reportId) async {
+    final uri = widget.backendClient.reportPdfUri(
+      reportId,
+      templateId: _reportTemplate,
+    );
+    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!opened && mounted) {
+      setState(() => _errorMessage = 'Could not open PDF report: $uri');
+    }
+  }
+
   AuditPayload? _buildPayload() {
     final dataset = _dataset;
     final outcome = _outcomeColumn;
@@ -1470,20 +1471,16 @@ class _AuditNavigationRail extends StatelessWidget {
   const _AuditNavigationRail({
     required this.repository,
     required this.user,
-    required this.guestMode,
     required this.selectedPage,
     required this.onSelect,
     required this.onNewAudit,
-    required this.onExitGuestMode,
   });
 
   final AuditRepository repository;
   final User? user;
-  final bool guestMode;
   final _AuditPage selectedPage;
   final ValueChanged<_AuditPage> onSelect;
   final VoidCallback onNewAudit;
-  final VoidCallback onExitGuestMode;
 
   @override
   Widget build(BuildContext context) {
@@ -1579,48 +1576,6 @@ class _AuditNavigationRail extends StatelessWidget {
       );
     }
 
-    if (guestMode) {
-      return SurfacePanel(
-        padding: const EdgeInsets.all(14),
-        backgroundColor: AppColors.surface,
-        accentColor: AppColors.warning,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const StatusPill(
-              label: 'Guest mode',
-              color: AppColors.warning,
-              backgroundColor: AppColors.warningContainer,
-            ),
-            const SizedBox(height: 10),
-            Text(
-              'Audits run normally. Firebase history is skipped until Google sign-in is enabled.',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodyMedium
-                  ?.copyWith(color: AppColors.muted),
-            ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: () => _signIn(context),
-                  icon: const Icon(Icons.login),
-                  label: const Text('Sign in'),
-                ),
-                OutlinedButton(
-                  onPressed: onExitGuestMode,
-                  child: const Text('Login gate'),
-                ),
-              ],
-            ),
-          ],
-        ),
-      );
-    }
-
     return SurfacePanel(
       padding: const EdgeInsets.all(14),
       backgroundColor: AppColors.surface,
@@ -1666,7 +1621,7 @@ class _AuditNavigationRail extends StatelessWidget {
   }
 
   Widget _recentRuns(BuildContext context) {
-    if (guestMode || user == null || !repository.enabled) {
+    if (user == null || !repository.enabled) {
       return const EmptyState(message: 'Sign in to save and review runs.');
     }
 
@@ -1718,30 +1673,63 @@ class _AuditNavigationRail extends StatelessWidget {
       },
     );
   }
+}
 
-  Future<void> _signIn(BuildContext context) async {
-    try {
-      await repository.signInWithGoogle();
-      onExitGuestMode();
-    } catch (error) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(error.toString())),
-      );
-    }
+class _UserBadge extends StatelessWidget {
+  const _UserBadge({required this.user});
+
+  final User user;
+
+  @override
+  Widget build(BuildContext context) {
+    final photoUrl = user.photoURL;
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 320),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        border: Border.all(color: AppColors.outline.withValues(alpha: 0.28)),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircleAvatar(
+            radius: 16,
+            backgroundColor: AppColors.primaryContainer,
+            backgroundImage: photoUrl == null || photoUrl.isEmpty
+                ? null
+                : NetworkImage(photoUrl),
+            child: photoUrl == null || photoUrl.isEmpty
+                ? const Icon(Icons.person, size: 18)
+                : null,
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              user.displayName ?? user.email ?? 'Google account',
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: AppColors.text,
+                  ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
 class _HistoryReview extends StatelessWidget {
   const _HistoryReview({
     required this.repository,
+    required this.backendClient,
     required this.user,
-    required this.guestMode,
   });
 
   final AuditRepository repository;
+  final AuditBackendClient backendClient;
   final User? user;
-  final bool guestMode;
 
   @override
   Widget build(BuildContext context) {
@@ -1758,7 +1746,7 @@ class _HistoryReview extends StatelessWidget {
           const SizedBox(height: 16),
           if (!repository.enabled)
             EmptyState(message: repository.disabledReason)
-          else if (guestMode || user == null)
+          else if (user == null)
             const EmptyState(
               message:
                   'Sign in with Google to persist audit runs to Firestore.',
@@ -1825,6 +1813,17 @@ class _HistoryReview extends StatelessWidget {
                                     record.createdAt.toLocal(),
                                   ),
                                 ),
+                                if (record.reportId != null)
+                                  OutlinedButton.icon(
+                                    onPressed: () => launchUrl(
+                                      backendClient
+                                          .reportPdfUri(record.reportId!),
+                                      mode: LaunchMode.externalApplication,
+                                    ),
+                                    icon: const Icon(
+                                        Icons.picture_as_pdf_outlined),
+                                    label: const Text('Download PDF'),
+                                  ),
                               ],
                             ),
                           ],

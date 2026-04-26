@@ -1,6 +1,6 @@
 # AI Bias Auditor Flutter/Firebase
 
-This folder is a separate Flutter web front end for the existing FastAPI audit engine. It keeps the Python ML pipeline intact and adds Firebase Hosting plus Firestore audit history.
+This folder is the supported user-facing frontend for AI Bias Auditor. It keeps the Python/FastAPI ML pipeline as the backend API and owns authentication, audit configuration, results review, PDF access, and user-scoped Firestore history.
 
 ## Architecture
 
@@ -54,11 +54,10 @@ Run Flutter web from this folder:
 flutter pub get
 flutter run -d chrome \
   --web-port 5050 \
-  --dart-define=API_BASE_URL=http://127.0.0.1:8000 \
-  --dart-define=FIREBASE_API_KEY=your-firebase-web-api-key
+  --dart-define=API_BASE_URL=http://127.0.0.1:8000
 ```
 
-Firebase web configuration is read from build-time `--dart-define` values. The Firebase web API key is not committed to source.
+Firebase web configuration defaults to the existing project `ai-bias-auditor-2604171603`. You can still override any value with `--dart-define=FIREBASE_*` for another Firebase project.
 
 ## Deploy
 
@@ -66,8 +65,7 @@ Build Flutter web:
 
 ```bash
 flutter build web \
-  --dart-define=API_BASE_URL=https://your-cloud-run-url \
-  --dart-define=FIREBASE_API_KEY=your-firebase-web-api-key
+  --dart-define=API_BASE_URL=https://your-cloud-run-url
 ```
 
 Deploy rules and hosting:
@@ -93,7 +91,7 @@ Google sign-in must be enabled once in the Firebase Console:
 3. Open **Google** under sign-in providers.
 4. Enable it, set the support email, and save.
 
-Google sign-in is wired through `FirebaseAuth.signInWithPopup(...)`. Local testing should use `http://localhost:5050`; `http://127.0.0.1:5050` must be added to Firebase Authentication authorized domains if you want to use that exact origin.
+Google sign-in is wired through `FirebaseAuth.signInWithPopup(...)` with redirect fallback for blocked popups. Local testing should use `http://localhost:5050`; `http://127.0.0.1:5050` must be added to Firebase Authentication authorized domains if you want to use that exact origin.
 
 ## Current Scope
 
@@ -105,7 +103,8 @@ The Flutter app covers the hackathon governance flow:
 - Train a tuned model family or upload a prediction CSV with optional row-id matching and score/probability metadata
 - Run pre-model and full post-model audits separately
 - View model comparison, conditional fairness, row-level audit trace, and Gemini analysis
+- Download backend-generated PDF reports
 - Sign in with Google
 - Save user profiles, audit summaries, report JSON, and trace previews to user-scoped Firestore paths
 
-Uploaded pickle/joblib model artifacts are disabled by default in the current UI because prediction CSV mode is safer for third-party model reviews. Gemini summaries are advisory and cannot certify model safety. The existing FastAPI UI can still be used independently for local history and optional server-side Firestore mirroring; browser Google login lives in this Flutter/Firebase UI.
+Uploaded pickle/joblib model artifacts are disabled by default in the current UI because prediction CSV mode is safer for third-party model reviews. Gemini summaries are advisory and cannot certify model safety. The legacy FastAPI HTML pages are no longer a separate UI path; FastAPI serves the API and redirects user-facing routes to Flutter through `FRONTEND_URL`.

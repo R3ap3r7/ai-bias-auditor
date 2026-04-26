@@ -167,9 +167,9 @@ def test_upload_and_audit_api_flow() -> None:
     client = TestClient(app)
     csv_bytes = biased_frame().to_csv(index=False).encode()
 
-    landing = client.get("/")
-    assert landing.status_code == 200
-    assert "AI Bias Auditor" in landing.text
+    landing = client.get("/", follow_redirects=False)
+    assert landing.status_code in {302, 307}
+    assert "localhost:5050" in landing.headers["location"]
 
     upload = client.post("/api/upload", files={"file": ("biased.csv", BytesIO(csv_bytes), "text/csv")})
     assert upload.status_code == 200

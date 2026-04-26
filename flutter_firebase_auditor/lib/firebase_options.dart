@@ -2,7 +2,10 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 
 class DefaultFirebaseOptions {
-  static const _apiKey = String.fromEnvironment('FIREBASE_API_KEY');
+  static const _apiKey = String.fromEnvironment(
+    'FIREBASE_API_KEY',
+    defaultValue: 'AIzaSyCqkdfSPyzryXFzyrIn_PAW1P9HEifWXrY',
+  );
   static const _appId = String.fromEnvironment(
     'FIREBASE_APP_ID',
     defaultValue: '1:49788943765:web:b1682c0470abd4cab84a9c',

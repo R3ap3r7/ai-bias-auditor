@@ -94,6 +94,14 @@ class AuditBackendClient {
     return _postJson('/api/audit', payload.toJson());
   }
 
+  Uri reportPdfUri(String reportId, {String? templateId}) {
+    final path = '/api/report/$reportId/pdf';
+    final query = templateId == null || templateId.isEmpty
+        ? null
+        : <String, String>{'template_id': templateId};
+    return _uri(path).replace(queryParameters: query);
+  }
+
   Uri _uri(String path) => Uri.parse('$apiBaseUrl$path');
 
   Future<Map<String, dynamic>> _postJson(

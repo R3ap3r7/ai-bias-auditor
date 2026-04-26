@@ -84,7 +84,18 @@ class AuditRepository {
 
     final provider = GoogleAuthProvider()
       ..setCustomParameters({'prompt': 'select_account'});
-    final credential = await auth!.signInWithPopup(provider);
+    UserCredential credential;
+    try {
+      credential = await auth!.signInWithPopup(provider);
+    } on FirebaseAuthException catch (error) {
+      if (error.code != 'popup-blocked' &&
+          error.code != 'popup-closed-by-user' &&
+          error.code != 'cancelled-popup-request') {
+        rethrow;
+      }
+      await auth!.signInWithRedirect(provider);
+      credential = await auth!.getRedirectResult();
+    }
     final user = credential.user;
     if (user != null) {
       await _upsertUserProfile(user);

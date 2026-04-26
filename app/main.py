@@ -11,7 +11,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -81,19 +81,24 @@ class AuditRequest(BaseModel):
     organization_id: str | None = None
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "index.html", {})
+def frontend_url(path: str = "") -> str:
+    base = os.getenv("FRONTEND_URL", "http://localhost:5050").rstrip("/")
+    return f"{base}{path}"
 
 
-@app.get("/audit", response_class=HTMLResponse)
-async def audit_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "audit.html", {})
+@app.get("/")
+async def index(request: Request) -> RedirectResponse:
+    return RedirectResponse(frontend_url())
 
 
-@app.get("/history", response_class=HTMLResponse)
-async def history_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "history.html", {})
+@app.get("/audit")
+async def audit_page(request: Request) -> RedirectResponse:
+    return RedirectResponse(frontend_url())
+
+
+@app.get("/history")
+async def history_page(request: Request) -> RedirectResponse:
+    return RedirectResponse(frontend_url())
 
 
 @app.get("/health")
