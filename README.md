@@ -109,9 +109,11 @@ Each policy configures fairness thresholds, severity weights, deployment-decisio
 
 Audit sessions still keep raw uploaded datasets and unsafe model artifacts in process memory only. Completed reports are persisted as JSON under `data/audit_history/` and are exposed through `/history` and `/api/history`. Report persistence modes are `aggregate_only`, `anonymized_traces`, and `full_report`; the default is `anonymized_traces` unless `REPORT_PERSISTENCE_MODE` is configured. Production deployments should use `aggregate_only` or `anonymized_traces`.
 
-The FastAPI HTML UI is the primary local/private UI. It has local persistent history and optional server-side Firestore mirroring when `google-cloud-firestore`, `FIRESTORE_PROJECT_ID`, and credentials are configured. It does not provide browser Google login. The separate `flutter_firebase_auditor/` UI provides Firebase Auth with Google sign-in and writes user-scoped audit history to Cloud Firestore under each authenticated user.
+The FastAPI HTML UI is the primary local/private UI. Its landing page starts with Firebase Google sign-in when Firebase web config is present, then shows the signed-in user's name/photo before they enter the audit workspace. It has local persistent history and optional server-side Firestore mirroring when `google-cloud-firestore`, `FIRESTORE_PROJECT_ID`, and credentials are configured. The separate `flutter_firebase_auditor/` UI also provides Firebase Auth with Google sign-in and writes user-scoped audit history to Cloud Firestore under each authenticated user.
 
 The stored artifact intentionally avoids raw CSV persistence by default and does not persist uploaded pickle/joblib model artifacts. It stores dataset hashes, model fingerprints, aggregate metrics, policy metadata, report text or report metadata depending on persistence mode, severity, and deployment decisions.
+
+Firestore security rules are included at the repository root (`firestore.rules`, `firebase.json`) and in `flutter_firebase_auditor/` for the Flutter hosting deployment. They scope authenticated history under `users/{uid}/auditRuns`, `users/{uid}/reports`, and per-run `traceRecords`.
 
 ## Supported Scope and Limitations
 

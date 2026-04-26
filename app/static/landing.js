@@ -5,6 +5,108 @@
 
 'use strict';
 
+document.body.classList.add('auth-pending');
+
+/* ── FIREBASE AUTH GATE ─────────────────────────────────────── */
+const authGate = document.getElementById('authGate');
+const googleSignInBtn = document.getElementById('googleSignInBtn');
+const authError = document.getElementById('authError');
+const navUser = document.getElementById('navUser');
+const navUserPhoto = document.getElementById('navUserPhoto');
+const navUserName = document.getElementById('navUserName');
+const navSignOut = document.getElementById('navSignOut');
+const authStorageKey = 'aiBiasAuditorUser';
+
+function setAuthError(message) {
+  if (authError) authError.textContent = message || '';
+}
+
+function profileFromUser(user) {
+  return {
+    uid: user.uid,
+    email: user.email || '',
+    displayName: user.displayName || user.email || 'Google account',
+    photoURL: user.photoURL || '',
+    projectId: user.auth?.app?.options?.projectId || '',
+  };
+}
+
+function applySignedInProfile(profile) {
+  localStorage.setItem(authStorageKey, JSON.stringify(profile));
+  document.body.classList.remove('auth-pending');
+  authGate && authGate.classList.add('hidden');
+  if (navUser) navUser.classList.remove('hidden');
+  if (navUserName) navUserName.textContent = profile.displayName || profile.email || 'Google account';
+  if (navUserPhoto) {
+    navUserPhoto.src = profile.photoURL || '';
+    navUserPhoto.alt = profile.displayName ? `${profile.displayName} profile photo` : 'Google profile photo';
+    navUserPhoto.classList.toggle('hidden', !profile.photoURL);
+  }
+}
+
+function clearSignedInProfile() {
+  localStorage.removeItem(authStorageKey);
+  document.body.classList.add('auth-pending');
+  authGate && authGate.classList.remove('hidden');
+  navUser && navUser.classList.add('hidden');
+}
+
+async function initFirebaseAuthGate() {
+  try {
+    const response = await fetch('/api/firebase-config');
+    const payload = await response.json();
+    if (!payload.enabled) {
+      clearSignedInProfile();
+      setAuthError('Firebase web config is missing. Set FIREBASE_API_KEY, FIREBASE_PROJECT_ID, FIREBASE_APP_ID, FIREBASE_AUTH_DOMAIN, FIREBASE_MESSAGING_SENDER_ID, and FIREBASE_STORAGE_BUCKET.');
+      if (googleSignInBtn) googleSignInBtn.disabled = true;
+      return;
+    }
+
+    const appModule = await import('https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js');
+    const authModule = await import('https://www.gstatic.com/firebasejs/10.12.4/firebase-auth.js');
+    const firebaseApp = appModule.initializeApp(payload.config);
+    const auth = authModule.getAuth(firebaseApp);
+    const provider = new authModule.GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+
+    authModule.onAuthStateChanged(auth, (user) => {
+      if (user) {
+        applySignedInProfile(profileFromUser(user));
+      } else {
+        const cached = localStorage.getItem(authStorageKey);
+        if (cached) {
+          try {
+            applySignedInProfile(JSON.parse(cached));
+            return;
+          } catch {
+            localStorage.removeItem(authStorageKey);
+          }
+        }
+        clearSignedInProfile();
+      }
+    });
+
+    googleSignInBtn && googleSignInBtn.addEventListener('click', async () => {
+      setAuthError('');
+      try {
+        await authModule.signInWithPopup(auth, provider);
+      } catch (error) {
+        setAuthError(error.message || 'Google sign-in failed.');
+      }
+    });
+
+    navSignOut && navSignOut.addEventListener('click', async () => {
+      await authModule.signOut(auth);
+      clearSignedInProfile();
+    });
+  } catch (error) {
+    clearSignedInProfile();
+    setAuthError(error.message || 'Firebase authentication could not be initialized.');
+  }
+}
+
+initFirebaseAuthGate();
+
 /* ── NAVBAR ─────────────────────────────────────────────────── */
 const navbar = document.getElementById('navbar');
 const navHamburger = document.getElementById('navHamburger');

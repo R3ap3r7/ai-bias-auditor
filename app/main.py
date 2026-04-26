@@ -120,6 +120,22 @@ async def policies() -> dict[str, Any]:
     }
 
 
+@app.get("/api/firebase-config")
+async def firebase_config() -> dict[str, Any]:
+    config = {
+        "apiKey": os.getenv("FIREBASE_API_KEY", ""),
+        "authDomain": os.getenv("FIREBASE_AUTH_DOMAIN", ""),
+        "projectId": os.getenv("FIREBASE_PROJECT_ID", ""),
+        "storageBucket": os.getenv("FIREBASE_STORAGE_BUCKET", ""),
+        "messagingSenderId": os.getenv("FIREBASE_MESSAGING_SENDER_ID", ""),
+        "appId": os.getenv("FIREBASE_APP_ID", ""),
+    }
+    return {
+        "enabled": all(config.values()),
+        "config": config,
+    }
+
+
 @app.get("/api/history")
 async def history(limit: int = Query(default=25, ge=1, le=100)) -> dict[str, Any]:
     return {"items": STORE.list_reports(limit=limit), "storage": STORE.storage_status()}

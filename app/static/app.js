@@ -9,6 +9,8 @@ const state = {
   reportTemplates: [],
 };
 
+const authStorageKey = "aiBiasAuditorUser";
+
 const els = {
   message: document.getElementById("message"),
   landing: document.getElementById("landing"),
@@ -105,6 +107,10 @@ function initScrollAnimations() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  if (!readSignedInUser()) {
+    window.location.href = "/";
+    return;
+  }
   loadDemos();
   loadPolicies();
   initScrollAnimations();
@@ -346,6 +352,7 @@ function selectedAuditPayload() {
   if (!protectedAttributes.length) {
     throw new Error("Select at least one protected attribute.");
   }
+  const user = readSignedInUser();
   return {
     session_id: state.sessionId,
     protected_attributes: protectedAttributes,
@@ -359,12 +366,23 @@ function selectedAuditPayload() {
     control_features: selectedControlFeatures(),
     model_selection_priority: Number(els.modelPriority.value) / 100,
     persistence_mode: "anonymized_traces",
+    user_id: user?.uid || null,
+    project_id: user?.projectId || null,
   };
 }
 
 function appendOptionalFormValue(formData, key, value) {
   const trimmed = String(value || "").trim();
   if (trimmed) formData.append(key, trimmed);
+}
+
+function readSignedInUser() {
+  try {
+    const raw = localStorage.getItem(authStorageKey);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
 }
 
 async function runPreAudit() {

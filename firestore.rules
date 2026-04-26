@@ -1,0 +1,53 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    match /users/{userId} {
+      allow create: if isSelf(userId)
+        && request.resource.data.uid == userId;
+      allow read: if isSelf(userId);
+      allow update: if isSelf(userId)
+        && request.resource.data.uid == userId;
+      allow delete: if false;
+
+      match /auditRuns/{auditId} {
+        allow create: if isSelf(userId)
+          && request.resource.data.ownerId == userId;
+        allow read, update, delete: if isSelf(userId)
+          && resource.data.ownerId == userId;
+
+        match /traceRecords/{traceId} {
+          allow create, read, update, delete: if isSelf(userId);
+        }
+      }
+
+      match /reports/{reportId} {
+        allow create: if isSelf(userId)
+          && request.resource.data.ownerId == userId;
+        allow read, update, delete: if isSelf(userId)
+          && resource.data.ownerId == userId;
+      }
+    }
+
+    match /auditRuns/{auditId} {
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid;
+      allow read, update, delete: if signedIn()
+        && resource.data.ownerId == request.auth.uid;
+
+      match /traceRecords/{traceId} {
+        allow create, read, update, delete: if signedIn()
+          && exists(/databases/$(database)/documents/auditRuns/$(auditId))
+          && get(/databases/$(database)/documents/auditRuns/$(auditId)).data.ownerId == request.auth.uid;
+      }
+    }
+  }
+}

@@ -1,4 +1,10 @@
-document.addEventListener("DOMContentLoaded", loadHistory);
+document.addEventListener("DOMContentLoaded", () => {
+  if (!localStorage.getItem("aiBiasAuditorUser")) {
+    window.location.href = "/";
+    return;
+  }
+  loadHistory();
+});
 
 async function loadHistory() {
   const status = document.getElementById("historyStatus");
