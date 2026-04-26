@@ -1,0 +1,79 @@
+{
+  "policy_id": "employment_screening_strict",
+  "version": "1.0.0",
+  "name": "Employment Screening Strict",
+  "description": "Lower fairness tolerances for hiring or candidate-screening workflows.",
+  "fairness_thresholds": {
+    "demographic_parity_difference": {
+      "medium": 0.06,
+      "high": 0.12,
+      "critical": 0.2
+    },
+    "equalized_odds_difference": {
+      "medium": 0.06,
+      "high": 0.12,
+      "critical": 0.2
+    },
+    "disparate_impact_ratio": {
+      "warning_below": 0.85,
+      "critical_below": 0.65
+    },
+    "representation_ratio": {
+      "warning_below": 0.85,
+      "critical_below": 0.6
+    },
+    "proxy_variable_strength": {
+      "warning_above": 0.45,
+      "critical_above": 0.7
+    }
+  },
+  "severity_weights": {
+    "demographic_parity_difference": 0.25,
+    "equalized_odds_difference": 0.25,
+    "disparate_impact_ratio": 0.15,
+    "proxy_variable_risk": 0.15,
+    "underrepresentation": 0.12,
+    "small_group_uncertainty": 0.04,
+    "conditional_fairness_gap": 0.04
+  },
+  "severity_thresholds": {
+    "medium_at_or_above": 0.22,
+    "high_at_or_above": 0.42,
+    "critical_at_or_above": 0.62
+  },
+  "deployment_decision_thresholds": {
+    "safe_to_deploy_below": 0.18,
+    "needs_review_below": 0.42
+  },
+  "model_selection": {
+    "accuracy_metric": "balanced_accuracy",
+    "weights": {
+      "balanced_accuracy": 0.45,
+      "demographic_parity_difference": 0.2,
+      "equalized_odds_difference": 0.25,
+      "disparate_impact_ratio": 0.1
+    },
+    "minimum_recall": 0.65,
+    "maximum_equalized_odds_gap": 0.18,
+    "maximum_demographic_parity_gap": 0.18,
+    "minimum_disparate_impact_ratio": 0.7
+  },
+  "grouping_rules": {
+    "age": {
+      "type": "fixed_bins",
+      "bins": [0, 25, 40, 55, 200],
+      "labels": ["Under 25", "25-39", "40-54", "55+"]
+    },
+    "default_numeric": {
+      "type": "quantile",
+      "q": 4
+    },
+    "default_categorical": {
+      "type": "top_k_plus_other",
+      "top_k": 8
+    }
+  },
+  "report_defaults": {
+    "template": "compliance_review"
+  }
+}
