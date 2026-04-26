@@ -1,0 +1,79 @@
+{
+  "policy_id": "credit_lending_strict",
+  "version": "1.0.0",
+  "name": "Credit Lending Strict",
+  "description": "Strict policy for lending, underwriting, or credit risk decisions.",
+  "fairness_thresholds": {
+    "demographic_parity_difference": {
+      "medium": 0.05,
+      "high": 0.1,
+      "critical": 0.18
+    },
+    "equalized_odds_difference": {
+      "medium": 0.05,
+      "high": 0.1,
+      "critical": 0.18
+    },
+    "disparate_impact_ratio": {
+      "warning_below": 0.85,
+      "critical_below": 0.7
+    },
+    "representation_ratio": {
+      "warning_below": 0.85,
+      "critical_below": 0.65
+    },
+    "proxy_variable_strength": {
+      "warning_above": 0.4,
+      "critical_above": 0.7
+    }
+  },
+  "severity_weights": {
+    "demographic_parity_difference": 0.24,
+    "equalized_odds_difference": 0.28,
+    "disparate_impact_ratio": 0.14,
+    "proxy_variable_risk": 0.15,
+    "underrepresentation": 0.1,
+    "small_group_uncertainty": 0.03,
+    "conditional_fairness_gap": 0.06
+  },
+  "severity_thresholds": {
+    "medium_at_or_above": 0.22,
+    "high_at_or_above": 0.4,
+    "critical_at_or_above": 0.6
+  },
+  "deployment_decision_thresholds": {
+    "safe_to_deploy_below": 0.18,
+    "needs_review_below": 0.4
+  },
+  "model_selection": {
+    "accuracy_metric": "balanced_accuracy",
+    "weights": {
+      "balanced_accuracy": 0.48,
+      "demographic_parity_difference": 0.18,
+      "equalized_odds_difference": 0.24,
+      "disparate_impact_ratio": 0.1
+    },
+    "minimum_recall": 0.62,
+    "maximum_equalized_odds_gap": 0.16,
+    "maximum_demographic_parity_gap": 0.16,
+    "minimum_disparate_impact_ratio": 0.72
+  },
+  "grouping_rules": {
+    "age": {
+      "type": "fixed_bins",
+      "bins": [0, 25, 35, 50, 200],
+      "labels": ["Under 25", "25-34", "35-49", "50+"]
+    },
+    "default_numeric": {
+      "type": "quantile",
+      "q": 4
+    },
+    "default_categorical": {
+      "type": "top_k_plus_other",
+      "top_k": 8
+    }
+  },
+  "report_defaults": {
+    "template": "technical_audit"
+  }
+}

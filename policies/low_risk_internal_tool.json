@@ -1,0 +1,79 @@
+{
+  "policy_id": "low_risk_internal_tool",
+  "version": "1.0.0",
+  "name": "Low-Risk Internal Tool",
+  "description": "More permissive policy for internal, low-impact tooling.",
+  "fairness_thresholds": {
+    "demographic_parity_difference": {
+      "medium": 0.12,
+      "high": 0.24,
+      "critical": 0.35
+    },
+    "equalized_odds_difference": {
+      "medium": 0.12,
+      "high": 0.24,
+      "critical": 0.35
+    },
+    "disparate_impact_ratio": {
+      "warning_below": 0.75,
+      "critical_below": 0.45
+    },
+    "representation_ratio": {
+      "warning_below": 0.75,
+      "critical_below": 0.45
+    },
+    "proxy_variable_strength": {
+      "warning_above": 0.55,
+      "critical_above": 0.85
+    }
+  },
+  "severity_weights": {
+    "demographic_parity_difference": 0.22,
+    "equalized_odds_difference": 0.22,
+    "disparate_impact_ratio": 0.12,
+    "proxy_variable_risk": 0.12,
+    "underrepresentation": 0.1,
+    "small_group_uncertainty": 0.08,
+    "conditional_fairness_gap": 0.14
+  },
+  "severity_thresholds": {
+    "medium_at_or_above": 0.32,
+    "high_at_or_above": 0.58,
+    "critical_at_or_above": 0.8
+  },
+  "deployment_decision_thresholds": {
+    "safe_to_deploy_below": 0.3,
+    "needs_review_below": 0.6
+  },
+  "model_selection": {
+    "accuracy_metric": "balanced_accuracy",
+    "weights": {
+      "balanced_accuracy": 0.62,
+      "demographic_parity_difference": 0.14,
+      "equalized_odds_difference": 0.16,
+      "disparate_impact_ratio": 0.08
+    },
+    "minimum_recall": 0.5,
+    "maximum_equalized_odds_gap": 0.4,
+    "maximum_demographic_parity_gap": 0.4,
+    "minimum_disparate_impact_ratio": 0.4
+  },
+  "grouping_rules": {
+    "age": {
+      "type": "fixed_bins",
+      "bins": [0, 25, 45, 65, 200],
+      "labels": ["Under 25", "25-44", "45-64", "65+"]
+    },
+    "default_numeric": {
+      "type": "quantile",
+      "q": 4
+    },
+    "default_categorical": {
+      "type": "top_k_plus_other",
+      "top_k": 12
+    }
+  },
+  "report_defaults": {
+    "template": "executive_summary"
+  }
+}
