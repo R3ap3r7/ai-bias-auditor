@@ -13,3 +13,8 @@ output/
 *.log
 .venv_new
 .venv
+.venv
+.venv_new
+.venv313
+.flutter-sdk
+.env
