@@ -11,3 +11,5 @@ data/audit_history/
 !.env.example
 output/
 *.log
+.venv_new
+.venv
