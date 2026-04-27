@@ -1,10 +1,12 @@
 .venv/
+.venv313/
 __pycache__/
 *.pyc
 .pytest_cache/
 .playwright-cli/
 .DS_Store
 .env
+data/audit_history/
 .env.*
 !.env.example
 output/
