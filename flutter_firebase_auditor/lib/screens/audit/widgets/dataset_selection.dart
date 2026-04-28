@@ -173,7 +173,6 @@ class _DatasetSelectionState extends State<DatasetSelection> {
               ),
             ),
           ],
-          const Spacer(),
           const SizedBox(height: 24),
           SizedBox(
             width: double.infinity,
@@ -323,15 +322,16 @@ class _DemoCardItemState extends State<_DemoCardItem> {
           borderRadius: BorderRadius.circular(AppDimensions.radiusLg),
           child: Container(
             color: _isHovered ? const Color.fromRGBO(124, 58, 237, 0.08) : Colors.transparent,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Container(
-                  width: 3,
-                  color: widget.data['color'] as Color,
-                ),
-                Expanded(
-                  child: GlassCard(
+            child: IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Container(
+                    width: 3,
+                    color: widget.data['color'] as Color,
+                  ),
+                  Expanded(
+                    child: GlassCard(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
                     elevated: true,
                     accentBorder: widget.isSelected,
@@ -368,6 +368,7 @@ class _DemoCardItemState extends State<_DemoCardItem> {
                   ),
                 ),
               ],
+            ),
             ),
           ),
         ),
