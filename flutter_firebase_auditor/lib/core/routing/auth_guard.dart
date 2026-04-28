@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import '../../services/audit_repository.dart';
 
-bool isAuthenticated() => FirebaseAuth.instance.currentUser != null;
+bool isAuthenticated() => AuditRepository.instance.currentUser != null;
 
 void requireAuth(BuildContext context, {String fallbackRoute = '/auth'}) {
   if (!isAuthenticated()) {

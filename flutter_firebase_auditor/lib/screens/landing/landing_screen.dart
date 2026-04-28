@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import '../../services/audit_repository.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/gradients.dart';
@@ -111,7 +112,7 @@ class _LandingScreenState extends State<LandingScreen> {
               _buildNavLinks(isDrawer: true),
               const Spacer(),
               StreamBuilder<User?>(
-                stream: FirebaseAuth.instance.authStateChanges(),
+                stream: AuditRepository.instance.authStateChanges(),
                 builder: (context, snapshot) {
                   final isLoggedIn = snapshot.hasData;
                   return Column(
@@ -174,7 +175,7 @@ class _LandingScreenState extends State<LandingScreen> {
                 _buildNavLinks(),
                 const SizedBox(width: 16),
                 StreamBuilder<User?>(
-                  stream: FirebaseAuth.instance.authStateChanges(),
+                  stream: AuditRepository.instance.authStateChanges(),
                   builder: (context, snapshot) {
                     final isLoggedIn = snapshot.hasData;
                     if (isLoggedIn) {
@@ -384,8 +385,8 @@ class _HeroSectionState extends State<_HeroSection> with SingleTickerProviderSta
                   alignment: WrapAlignment.center,
                   children: [
                     GradientButton(
-                      text: FirebaseAuth.instance.currentUser != null ? 'Go to Dashboard' : 'Start Your Audit',
-                      onPressed: () => Navigator.pushNamed(context, FirebaseAuth.instance.currentUser != null ? '/dashboard' : '/audit'),
+                      text: AuditRepository.instance.currentUser != null ? 'Go to Dashboard' : 'Start Your Audit',
+                      onPressed: () => Navigator.pushNamed(context, AuditRepository.instance.currentUser != null ? '/dashboard' : '/audit'),
                       icon: const Icon(Icons.arrow_forward),
                     ),
                     OutlinedAccentButton(

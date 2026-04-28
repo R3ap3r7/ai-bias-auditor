@@ -2254,11 +2254,11 @@ def generate_explanation_report(summary: dict[str, Any], template_id: str = "ful
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if api_key:
         try:
-            import google.generativeai as genai
+            import google.generativeai as google_genai
 
-            genai.configure(api_key=api_key)
+            google_genai.configure(api_key=api_key)
             model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-            model = genai.GenerativeModel(model_name)
+            model = google_genai.GenerativeModel(model_name)
             response = model.generate_content(prompt)
             text = response.text.strip()
             if text:

@@ -40,7 +40,9 @@ class AuditRepository {
     }
 
     try {
-      await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+      print('Initializing Firebase...');
+      await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform).timeout(const Duration(seconds: 5));
+      print('Firebase initialized. Getting Auth instance...');
       final auth = FirebaseAuth.instance;
       final repository = AuditRepository._(
         enabled: true,
@@ -49,7 +51,9 @@ class AuditRepository {
         auth: auth,
         storage: FirebaseStorage.instance,
       );
-      await repository._completeRedirectSignIn();
+      print('Waiting for redirect result...');
+      await repository._completeRedirectSignIn().timeout(const Duration(seconds: 5));
+      print('Redirect result completed.');
       if (auth.currentUser != null) {
         await repository._upsertUserProfile(auth.currentUser!);
       }
@@ -144,18 +148,10 @@ class AuditRepository {
     // Extract and upload trace safely
     final model = rawResult['model'] as Map<String, dynamic>?;
     if (model != null && model.containsKey('audit_trace')) {
-       final traceData = model['audit_trace'];
-       
-       // Encode to json bytes
-       final bytes = Uint8List.fromList(utf8.encode(jsonEncode(traceData)));
-       final ref = storage!.ref('users/${user.uid}/traces/$auditId.json');
-       
-       await ref.putData(bytes, SettableMetadata(contentType: 'application/json'));
-       traceStorageUrl = await ref.getDownloadURL();
-       
-       // Strip trace from inline document to save space
-       model.remove('audit_trace');
-       rawResult['model'] = model;
+       // Skipping Firebase Storage upload to prevent CORS/404 errors in the browser console.
+       // The default storage bucket has not been provisioned in the GCP project.
+       // We will keep the 'audit_trace' inline within the Firestore document instead.
+       print('Firebase Storage bucket not configured. Keeping audit_trace inline.');
     }
 
     final record = AuditRecord.fromResult(

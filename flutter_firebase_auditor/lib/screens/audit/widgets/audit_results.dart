@@ -109,30 +109,22 @@ class _OverviewTab extends StatelessWidget {
         LayoutBuilder(
           builder: (context, constraints) {
             final isCompact = constraints.maxWidth < 600;
-            final cards = [
-              Expanded(
-                flex: isCompact ? 0 : 1,
-                child: MetricCard(
+            
+            Widget buildCard1() => MetricCard(
                   label: 'Dataset Profile',
                   value: '${dataset['rows'] ?? 0} rows',
                   description: '${dataset['columns'] ?? 0} columns',
                   accentColor: AppColors.accentBlue,
-                ),
-              ),
-              if (isCompact) const SizedBox(height: 16) else const SizedBox(width: 16),
-              Expanded(
-                flex: isCompact ? 0 : 1,
-                child: MetricCard(
+                );
+                
+            Widget buildCard2() => MetricCard(
                   label: 'Protected Attributes',
                   value: (dataset['protected_attributes'] as List?)?.length.toString() ?? '0',
                   description: 'Analyzed for bias',
                   accentColor: AppColors.accentSecondary,
-                ),
-              ),
-              if (isCompact) const SizedBox(height: 16) else const SizedBox(width: 16),
-              Expanded(
-                flex: isCompact ? 0 : 1,
-                child: GlassCard(
+                );
+                
+            Widget buildCard3() => GlassCard(
                   padding: const EdgeInsets.all(0),
                   child: Container(
                     padding: const EdgeInsets.all(AppDimensions.spacingMd),
@@ -145,11 +137,30 @@ class _OverviewTab extends StatelessWidget {
                       ],
                     ),
                   ),
-                ),
-              ),
-            ];
-            if (isCompact) return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: cards);
-            return Row(children: cards);
+                );
+
+            if (isCompact) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  buildCard1(),
+                  const SizedBox(height: 16),
+                  buildCard2(),
+                  const SizedBox(height: 16),
+                  buildCard3(),
+                ],
+              );
+            } else {
+              return Row(
+                children: [
+                  Expanded(child: buildCard1()),
+                  const SizedBox(width: 16),
+                  Expanded(child: buildCard2()),
+                  const SizedBox(width: 16),
+                  Expanded(child: buildCard3()),
+                ],
+              );
+            }
           }
         ),
       ],

@@ -149,15 +149,33 @@ class _ColumnConfigState extends State<ColumnConfig> {
           LayoutBuilder(
             builder: (context, constraints) {
               final isCompact = constraints.maxWidth < 600;
-              final children = [
-                Expanded(flex: isCompact ? 0 : 1, child: _buildDropdown('Outcome Column', _outcomeColumn, widget.session.columns, (v) => setState(() => _outcomeColumn = v))),
-                if (isCompact) const SizedBox(height: 16) else const SizedBox(width: 16),
-                Expanded(flex: isCompact ? 0 : 1, child: _buildDropdown('Model Type', _modelType, ['compare_all', 'logistic_regression', 'random_forest', 'gradient_boosting', 'xgboost', 'lightgbm'], (v) => setState(() => _modelType = v!))),
-                if (isCompact) const SizedBox(height: 16) else const SizedBox(width: 16),
-                Expanded(flex: isCompact ? 0 : 1, child: _buildDropdown('Post-Audit Model Source', _auditMode, ['train', 'uploaded_model', 'prediction_csv'], (v) => setState(() => _auditMode = v!))),
-              ];
-              if (isCompact) return Column(children: children);
-              return Row(children: children);
+              
+              Widget dd1() => _buildDropdown('Outcome Column', _outcomeColumn, widget.session.columns, (v) => setState(() => _outcomeColumn = v));
+              Widget dd2() => _buildDropdown('Model Type', _modelType, ['compare_all', 'logistic_regression', 'random_forest', 'gradient_boosting', 'xgboost', 'lightgbm'], (v) => setState(() => _modelType = v!));
+              Widget dd3() => _buildDropdown('Post-Audit Model Source', _auditMode, ['train', 'uploaded_model', 'prediction_csv'], (v) => setState(() => _auditMode = v!));
+
+              if (isCompact) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    dd1(),
+                    const SizedBox(height: 16),
+                    dd2(),
+                    const SizedBox(height: 16),
+                    dd3(),
+                  ],
+                );
+              } else {
+                return Row(
+                  children: [
+                    Expanded(child: dd1()),
+                    const SizedBox(width: 16),
+                    Expanded(child: dd2()),
+                    const SizedBox(width: 16),
+                    Expanded(child: dd3()),
+                  ],
+                );
+              }
             }
           ),
           const SizedBox(height: 48),
